@@ -1,0 +1,403 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>猴子 · 测试场</title>
+<link rel="icon" href="data:,">
+<script type="importmap">{ "imports": { "three": "../node_modules/three/build/three.module.js", "three/addons/": "../node_modules/three/examples/jsm/" } }</script>
+<style>
+  html, body { margin: 0; height: 100%; background: #070505; overflow: hidden; color: #cbbfa8; font: 12px -apple-system, "PingFang SC", sans-serif; }
+  canvas { display: block; }
+  #hud { position: fixed; left: 10px; top: 8px; white-space: pre; pointer-events: none; text-shadow: 0 1px 2px #000; font: 11px/1.4 ui-monospace, monospace; }
+  #lbl { position: fixed; left: 0; top: 0; width: 100%; pointer-events: none; }
+  .l { position: absolute; color: #ddd; font-size: 11px; padding: 2px 5px; background: rgba(0,0,0,.4); }
+</style></head>
+<body><div id="hud"></div><div id="lbl"></div>
+<script type="module">
+// Test bed for the monkey (src/niumo/monkey.js, moves_monkey.js, input.js, camera.js).
+//   default        flat caldera floor + a capsule stand-in of the 22 m seated giant (hands, knees, head, nose ring);
+//                  WASD / Space / J K L I play it; window.__T drives it deterministically for test/niumo_monkey.mjs
+//   ?mode=sheet&move=light1&times=0,0.1&views=side,front   pose sheet (studio light, grid)
+//   ?paused        start with the real-time loop paused (the test steps it)
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { loadCharacter, loadBlade } from '../src/assets.js';
+import { Actor } from '../src/actor.js';
+import { FX } from '../src/fx.js';
+import { updateLooks } from '../src/look.js';
+import { NiumoInput } from '../src/niumo/input.js';
+import { AutoCam } from '../src/niumo/camera.js';
+import { Monkey, createStaff, MONKEY_TUNING, coneHitsSphere, coneHitsCapsule, sweepStaff } from '../src/niumo/monkey.js';
+import { MONKEY, MONKEY_HOLD } from '../src/niumo/moves_monkey.js';
+
+const Q = new URLSearchParams(location.search);
+const MODE = Q.get('mode') || 'scene';
+const W = innerWidth, H = innerHeight;
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true, powerPreference: 'high-performance' });
+renderer.setPixelRatio(1);
+renderer.setSize(W, H);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(50, W / H, 0.05, 600);
+
+// ------------------------------------------------------------------ models (art may still be in production)
+
+async function has(url) { try { const r = await fetch(url, { method: 'HEAD', cache: 'no-store' }); return r.ok; } catch { return false; } }
+const monkeyUrl = (await has('../assets/models/niumo_monkey.glb')) ? '../assets/models/niumo_monkey.glb' : '../assets/models/heroine.glb';
+const staffGlb = await has('../assets/models/niumo_staff.glb');
+// ?clean=1 reproduces the shared loader's default arm-weight cleaning (too aggressive for the monkey's bracers)
+const char = await loadCharacter(monkeyUrl, { height: 1.5, cleanArms: Q.get('clean') === '1' });
+// the staff is the procedural rod (as in the game: loadMonkeyAssets); ?staff=glb shows the Tripo file instead
+const staff = staffGlb && Q.get('staff') === 'glb' ? await loadBlade('../assets/models/niumo_staff.glb', { length: 1.9, gripFrac: 0.3 }) : createStaff();
+scene.add(char.root);
+const actor = new Actor(char, { lib: MONKEY, hold: MONKEY_HOLD, sword: staff, scene });
+actor.playBase('idle', { fade: 0 });
+
+function volcanoEnv() {
+  const pm = new THREE.PMREMGenerator(renderer);
+  const env = new THREE.Scene();
+  env.add(new THREE.Mesh(new THREE.SphereGeometry(50, 32, 16), new THREE.ShaderMaterial({
+    side: THREE.BackSide, depthWrite: false,
+    vertexShader: 'varying vec3 vP; void main(){ vP = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }',
+    fragmentShader: `varying vec3 vP; void main(){ float h = vP.y;
+      vec3 c = mix(vec3(0.05, 0.022, 0.014), vec3(0.012, 0.01, 0.012), smoothstep(0.05, 0.8, h));
+      c += vec3(0.16, 0.05, 0.015) * smoothstep(0.1, -0.5, h);
+      gl_FragColor = vec4(c, 1.0); }`,
+  })));
+  for (let i = 0; i < 9; i++) {
+    const m = new THREE.Mesh(new THREE.SphereGeometry(1.4, 8, 6), new THREE.MeshBasicMaterial({ color: new THREE.Color(3.2, 0.9, 0.25) }));
+    const a = i / 9 * Math.PI * 2; m.position.set(Math.cos(a) * 30, -6 - (i % 3) * 3, Math.sin(a) * 30); env.add(m);
+  }
+  return pm.fromScene(env, 0.03).texture;
+}
+
+// ================================================================== pose sheet
+if (MODE === 'sheet') {
+  scene.background = new THREE.Color(0x2a2a2a);
+  scene.environment = volcanoEnv();
+  scene.add(new THREE.HemisphereLight(0xdfe6ff, 0x3a3228, 1.5));
+  const sun = new THREE.DirectionalLight(0xffffff, 2.4); sun.position.set(3, 6, 4); scene.add(sun);
+  scene.add(new THREE.GridHelper(20, 20, 0x555555, 0x3a3a3a));
+  const fx = new FX(scene, {});
+  const input = new NiumoInput(renderer.domElement);
+  const cam = new AutoCam(camera, {});
+  const monkey = new Monkey({ actor, fx, audio: null, cam, input, arena: {}, staff });
+  const move = Q.get('move') || 'light1';
+  const times = (Q.get('times') || '0').split(',').map(Number);
+  const views = (Q.get('views') || 'side,front,q').split(',');
+  const cw = +(Q.get('cw') || 300), ch = +(Q.get('ch') || 340);
+  renderer.setSize(cw * views.length, ch * times.length);
+  renderer.setScissorTest(true);
+  const VIEW = { front: 0, q: 40, side: 90, back: 180, qback: 140, left: -90, top: 'top' };
+  const lbl = document.getElementById('lbl');
+  const scam = new THREE.PerspectiveCamera(32, cw / ch, 0.05, 100);
+  const dbg = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]), new THREE.LineBasicMaterial({ color: 0xff3355, depthTest: false }));
+  dbg.renderOrder = 10; if (Q.get('debug') === '1') scene.add(dbg);
+  times.forEach((t, row) => {
+    monkey.reset({ x: 0, z: 0, yaw: 0 });
+    actor.mixer.setTime(0.35);
+    monkey.previewPose(move, t);
+    dbg.geometry.setFromPoints([monkey.seg.butt, monkey.seg.tip]);
+    views.forEach((v, col) => {
+      const H = 1.5, dist = H * 2.6, tgt = new THREE.Vector3(0, H * 0.55, 0).add(new THREE.Vector3(monkey.pos.x, monkey.pos.y, monkey.pos.z));
+      if (v === 'top') { scam.position.set(tgt.x, 6, tgt.z + 0.01); }
+      else { const ang = VIEW[v] * Math.PI / 180; scam.position.set(tgt.x - Math.sin(ang) * dist, H * 0.7 + monkey.pos.y, tgt.z + Math.cos(ang) * dist); }
+      scam.lookAt(tgt);
+      const x = col * cw, y = (times.length - 1 - row) * ch;
+      renderer.setViewport(x, y, cw, ch); renderer.setScissor(x, y, cw, ch);
+      updateLooks(scam);
+      renderer.render(scene, scam);
+      const d = document.createElement('div'); d.className = 'l'; d.style.left = x + 'px'; d.style.top = row * ch + 'px';
+      d.textContent = `${move} t=${t} ${v}`; lbl.appendChild(d);
+    });
+  });
+  window.__T = { ready: true, model: monkeyUrl };
+}
+
+// ================================================================== the test scene
+if (MODE === 'scene') {
+  scene.background = new THREE.Color(0x0b0605);
+  scene.fog = new THREE.FogExp2(0x1a0d08, 0.011);
+  scene.environment = volcanoEnv(); scene.environmentIntensity = 0.9;
+  // light: a dull red sky, the lava's warm underlight, a cool rim from the smoke above
+  scene.add(new THREE.HemisphereLight(0x4a3a36, 0x2a1208, 0.85));
+  const sky = new THREE.DirectionalLight(0x8a9ab8, 1.1);
+  sky.position.set(-20, 40, -30); sky.castShadow = true; sky.shadow.mapSize.set(2048, 2048);
+  Object.assign(sky.shadow.camera, { left: -40, right: 40, top: 40, bottom: -40, far: 140 }); sky.shadow.bias = -0.0005;
+  scene.add(sky, sky.target);
+  const lavaLights = [];
+  for (const [x, z, i] of [[14, 6, 26], [-16, 4, 22], [0, 30, 18], [12, 20, 30]]) {
+    const l = new THREE.PointLight(0xff5a1e, i, 28, 1.6); l.position.set(x, 0.6, z); scene.add(l); lavaLights.push(l);
+  }
+
+  // floor: basalt with cooled-lava cracks, a stone platform, a basalt pillar, a lava pool
+  const floorTex = (() => {
+    const c = document.createElement('canvas'); c.width = c.height = 512; const g = c.getContext('2d');
+    g.fillStyle = '#1a1614'; g.fillRect(0, 0, 512, 512);
+    let s = 3; const R = () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296);
+    for (let i = 0; i < 2600; i++) { const x = R() * 512, y = R() * 512, r = 1 + R() * 6; g.fillStyle = `rgba(${40 + R() * 30},${34 + R() * 22},${30 + R() * 18},${0.3 + R() * 0.4})`; g.beginPath(); g.arc(x, y, r, 0, 7); g.fill(); }
+    g.strokeStyle = 'rgba(8,6,5,0.9)'; g.lineWidth = 2;
+    for (let i = 0; i < 26; i++) { let x = R() * 512, y = R() * 512; g.beginPath(); g.moveTo(x, y); for (let k = 0; k < 8; k++) { x += (R() - 0.5) * 60; y += (R() - 0.5) * 60; g.lineTo(x, y); } g.stroke(); }
+    const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(24, 24); t.anisotropy = 8; return t;
+  })();
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(240, 240), new THREE.MeshStandardMaterial({ map: floorTex, roughness: 0.95, metalness: 0 }));
+  floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true; scene.add(floor);
+  const stone = new THREE.MeshStandardMaterial({ color: 0x2a2522, roughness: 0.9 });
+  const PLAT = { minX: -14, maxX: -9, minZ: 8, maxZ: 13, h: 1.2 };
+  const plat = new THREE.Mesh(new THREE.BoxGeometry(PLAT.maxX - PLAT.minX, PLAT.h, PLAT.maxZ - PLAT.minZ), stone);
+  plat.position.set((PLAT.minX + PLAT.maxX) / 2, PLAT.h / 2, (PLAT.minZ + PLAT.maxZ) / 2); plat.castShadow = plat.receiveShadow = true; scene.add(plat);
+  const PILLAR = { x: 7, z: 16, r: 1.1 };
+  const pillar = new THREE.Mesh(new THREE.CylinderGeometry(PILLAR.r, PILLAR.r * 1.15, 9, 7), stone);
+  pillar.position.set(PILLAR.x, 4.5, PILLAR.z); pillar.castShadow = true; scene.add(pillar);
+  const POOL = { x: 13, z: 21, r: 2.6 };
+  const pool = new THREE.Mesh(new THREE.CircleGeometry(POOL.r, 40), new THREE.MeshStandardMaterial({ color: 0x120604, emissive: new THREE.Color(0.9, 0.22, 0.04), emissiveIntensity: 0.9, roughness: 0.7 }));
+  pool.rotation.x = -Math.PI / 2; pool.position.set(POOL.x, 0.02, POOL.z); scene.add(pool);
+
+  const arena = {
+    bounds: { minX: -45, maxX: 45, minZ: -45, maxZ: 48 },
+    colliders: [PILLAR],
+    cameraBlockers: { circles: [PILLAR], bounds: { minX: -50, maxX: 50, minZ: -50, maxZ: 54 } },
+    groundY(x, z) { return x > PLAT.minX && x < PLAT.maxX && z > PLAT.minZ && z < PLAT.maxZ ? PLAT.h : 0; },
+    lavaAt(x, z) { const d = Math.hypot(x - POOL.x, z - POOL.z); return d < POOL.r ? 1 : d < POOL.r + 0.6 ? 0.4 : 0; },
+    shake() {},
+    gusts: [],
+    fanGust(o, d, r, a) { this.gusts.push({ o: o.toArray(), d: d.toArray(), r, a }); },
+  };
+
+  // ---------------------------------------------------------------- stand-in giant: 22 m seated, capsules
+  const V = (x, y, z) => new THREE.Vector3(x, y, z);
+  const SEAT = V(0, 0, -30);
+  // control points per pose (world, the giant faces +z); his left is +x
+  const P_REST = {
+    torso: [V(0, 5, -31), V(0, 14.5, -31), 6.6],
+    head: [V(0, 18.4, -28.6), V(0, 20.4, -29.6), 2.5],
+    thighL: [V(2.5, 2.6, -29.5), V(8.2, 2.8, -23.6), 2.3], thighR: [V(-2.5, 2.6, -29.5), V(-8.2, 2.8, -23.6), 2.3],
+    kneeL: [V(8.3, 3.0, -23.2), V(9.2, 3.0, -22.2), 2.4], kneeR: [V(-8.3, 3.0, -23.2), V(-9.2, 3.0, -22.2), 2.4],
+    shinL: [V(8.6, 1.8, -22.4), V(-2.5, 1.3, -26.6), 1.6], shinR: [V(-8.6, 1.8, -22.4), V(2.5, 1.3, -27.2), 1.6],
+    uarmL: [V(7, 13.8, -31), V(9.6, 8.6, -27.6), 1.9], uarmR: [V(-7, 13.8, -31), V(-9.6, 8.6, -27.6), 1.9],
+    farmL: [V(9.6, 8.6, -27.6), V(8.8, 6.6, -24.4), 1.5], farmR: [V(-9.6, 8.6, -27.6), V(-8.8, 6.6, -24.4), 1.5],
+    handL: [V(8.8, 6.4, -23.8), V(8.9, 6.0, -21.6), 1.3], handR: [V(-8.8, 6.4, -23.8), V(-8.9, 6.0, -21.6), 1.3],
+    ring: V(0, 17.3, -26.3),
+  };
+  const lerpPose = (A, B, f) => { const o = {}; for (const k in A) o[k] = A[k].isVector3 ? A[k].clone().lerp(B[k], f) : [A[k][0].clone().lerp(B[k][0], f), A[k][1].clone().lerp(B[k][1], f), A[k][2] + (B[k][2] - A[k][2]) * f]; return o; };
+  const withParts = (base, over) => { const o = {}; for (const k in base) o[k] = base[k].isVector3 ? base[k].clone() : [base[k][0].clone(), base[k][1].clone(), base[k][2]]; return Object.assign(o, over); };
+  const POSES = {
+    rest: P_REST,
+    slamL: withParts(P_REST, { farmL: [V(9.6, 8.6, -27.6), V(6.4, 1.6, -16.2), 1.4], handL: [V(6.2, 1.05, -15.6), V(6.0, 0.95, -12.6), 1.05] }),
+    slamR: withParts(P_REST, { farmR: [V(-9.6, 8.6, -27.6), V(-6.4, 1.6, -16.2), 1.4], handR: [V(-6.2, 1.05, -15.6), V(-6.0, 0.95, -12.6), 1.05] }),
+    bow: withParts(P_REST, {
+      torso: [V(0, 5, -30.5), V(0, 10.5, -22.8), 6.2],
+      head: [V(0, 3.1, -17.6), V(0, 2.4, -15.2), 2.1],
+      uarmL: [V(6.5, 10, -24), V(9.2, 5, -19.5), 1.9], uarmR: [V(-6.5, 10, -24), V(-9.2, 5, -19.5), 1.9],
+      farmL: [V(9.2, 5, -19.5), V(7.4, 1.2, -15.6), 1.5], farmR: [V(-9.2, 5, -19.5), V(-7.4, 1.2, -15.6), 1.5],
+      handL: [V(7.2, 0.95, -15.2), V(6.8, 0.9, -12.6), 1.05], handR: [V(-7.2, 0.95, -15.2), V(-6.8, 0.9, -12.6), 1.05],
+      ring: V(0, 1.55, -13.55),
+    }),
+  };
+  const WEAK = new Set(['handL', 'handR', 'kneeL', 'kneeR', 'head']);
+  const basalt = new THREE.MeshStandardMaterial({ color: 0x241e1b, roughness: 0.92, metalness: 0.05 });
+  const crustHot = new THREE.MeshStandardMaterial({ color: 0x1d1512, roughness: 0.85, emissive: new THREE.Color(0.75, 0.16, 0.03), emissiveIntensity: 0.55 });
+  const bronze = new THREE.MeshStandardMaterial({ color: 0x34402f, roughness: 0.55, metalness: 0.85 });
+  const iron = new THREE.MeshStandardMaterial({ color: 0x252220, roughness: 0.45, metalness: 0.9 });
+  const cyl = new THREE.CylinderGeometry(1, 1, 1, 18, 1, true), sph = new THREE.SphereGeometry(1, 18, 12);
+  class Cap {
+    constructor(mat) { this.g = new THREE.Group(); this.c = new THREE.Mesh(cyl, mat); this.s0 = new THREE.Mesh(sph, mat); this.s1 = new THREE.Mesh(sph, mat);
+      for (const m of [this.c, this.s0, this.s1]) { m.castShadow = m.receiveShadow = true; this.g.add(m); } scene.add(this.g); }
+    set(a, b, r) {
+      const d = b.clone().sub(a), L = d.length();
+      this.c.position.copy(a).add(b).multiplyScalar(0.5); this.c.scale.set(r, Math.max(L, 1e-3), r);
+      this.c.quaternion.setFromUnitVectors(V(0, 1, 0), L > 1e-6 ? d.normalize() : V(0, 1, 0));
+      this.s0.position.copy(a); this.s1.position.copy(b); this.s0.scale.setScalar(r); this.s1.scale.setScalar(r);
+    }
+  }
+  class Giant {
+    constructor() {
+      this.pos = SEAT.clone(); this.yaw = 0; this.hp = 4000; this.maxHp = 4000; this.dead = false; this.phase = 1; this.events = [];
+      this.hits = []; this.crits = []; this.fans = []; this.results = [];
+      this.pose = 'rest'; this.from = P_REST; this.cur = P_REST; this.blend = 1; this.pending = [];
+      this.critTaken = false; this.dormant = false; this.camHint = null; this.thr = null; this.radius = 8.5;
+      this.hitFx = false;              // the stand-in draws nothing itself: the monkey's own sparks are exercised
+      this.caps = {};
+      for (const k in P_REST) if (!P_REST[k].isVector3) this.caps[k] = new Cap(k === 'head' ? bronze : WEAK.has(k) ? crustHot : basalt);
+      // horns and the iron nose ring
+      this.horns = new THREE.Group();
+      for (const s of [-1, 1]) {
+        const h = new THREE.Mesh(new THREE.TorusGeometry(3.2, 0.55, 10, 24, Math.PI * 0.62), bronze);
+        h.position.set(s * 2.0, 0.8, 0); h.rotation.set(0, s > 0 ? 0 : Math.PI, 0.25 * s); h.castShadow = true; this.horns.add(h);
+      }
+      scene.add(this.horns);
+      this.ring = new THREE.Mesh(new THREE.TorusGeometry(0.55, 0.09, 10, 28), iron); this.ring.castShadow = true; scene.add(this.ring);
+      this.apply();
+    }
+    setPose(p, dur = 0.6) { this.from = this.cur; this.pose = p; this.blend = dur > 0 ? 0 : 1; this.dur = dur; if (p === 'bow') this.critTaken = false; if (dur <= 0) this.apply(); }
+    apply() {
+      const f = this.blend >= 1 ? 1 : this.blend;
+      this.cur = lerpPose(this.from, POSES[this.pose], THREE.MathUtils.smoothstep(f, 0, 1));
+      for (const k in this.caps) this.caps[k].set(...this.cur[k]);
+      const [ha, hb] = this.cur.head;
+      const hd = hb.clone().sub(ha).normalize();
+      this.horns.position.copy(ha).lerp(hb, 0.3); this.horns.quaternion.setFromUnitVectors(V(0, 1, 0), hd);
+      this.ring.position.copy(this.cur.ring);
+    }
+    hurtZones() {
+      const z = [];
+      for (const k in this.caps) {
+        const part = WEAK.has(k) ? k : 'body';
+        z.push({ part, a: this.cur[k][0], b: this.cur[k][1], r: this.cur[k][2], name: k });
+      }
+      return z;
+    }
+    lockTargets() {
+      const t = [];
+      for (const k of ['handL', 'handR', 'kneeL', 'kneeR']) t.push({ part: k, pos: this.cur[k][0].clone().lerp(this.cur[k][1], 0.5) });
+      if (this.pose === 'bow') t.push({ part: 'head', pos: this.cur.head[0].clone().lerp(this.cur.head[1], 0.5) });
+      t.push({ part: 'body', pos: this.cur.torso[0].clone().lerp(this.cur.torso[1], 0.5) });
+      return t;
+    }
+    noseRing() { return this.cur.ring; }
+    takeHit(h) {
+      this.hits.push({ part: h.part, dmg: +h.dmg.toFixed(2), heavy: !!h.heavy, full: !!h.full, charge: +(h.charge || 0).toFixed(3), kind: h.kind, fan: !!h.fan, t: +T.time.toFixed(3) });
+      this.hp -= h.dmg;
+      this.events.push({ type: 'damage', amount: h.dmg });
+    }
+    criticalOpen() { return this.pose === 'bow' && this.blend >= 1 && !this.critTaken; }
+    takeCritical(c) { this.critTaken = true; this.crits.push({ dmg: c.dmg, t: +T.time.toFixed(3), point: c.point.toArray().map(v => +v.toFixed(2)) }); this.hp -= c.dmg; }
+    onFan(f) { this.fans.push({ origin: f.origin.toArray(), dir: f.dir.toArray(), via: 'onFan' }); }
+    /** bull.js protocol: the gust (from, horizontal dir, range, half-angle) */
+    fanned({ from, dir, range, angle }) { this.fans.push({ from: from.toArray(), dir: dir.toArray(), range, angle, via: 'fanned' }); return { reflected: false, extinguished: 0, exposed: [] }; }
+    /** bull.js protocol: the part about to strike (tests set T.giant.thr) */
+    threat() { return this.thr || { part: 'body', pos: this.cur.torso[1], radius: 14, big: false }; }
+    /** schedule a blow on the monkey `delay` seconds from now (sim time) */
+    strike({ delay = 0, dmg = 18, kind = 'heavy', blockable = true, label = '' } = {}) { this.pending.push({ at: T.time + delay, dmg, kind, blockable, label }); }
+    update(dt, m) {
+      if (this.blend < 1) { this.blend = Math.min(1, this.blend + dt / this.dur); this.apply(); }
+      for (const p of this.pending.splice(0)) {
+        if (T.time + 1e-6 < p.at) { this.pending.push(p); continue; }
+        const from = m.pos.clone().add(new THREE.Vector3(Math.sin(m.yaw), 0, Math.cos(m.yaw)).multiplyScalar(3)).setY(1);
+        const hp0 = m.hp;
+        const r = m.takeHit({ dmg: p.dmg, from, kind: p.kind, blockable: p.blockable });
+        this.results.push({ label: p.label, result: r, hp0: +hp0.toFixed(2), hp1: +m.hp.toFixed(2), mt: m.a.move ? +m.a.move.t.toFixed(3) : -1, move: m.a.move ? m.a.move.name : null, t: +T.time.toFixed(3) });
+      }
+    }
+  }
+  const giant = new Giant();
+
+  // ---------------------------------------------------------------- the monkey and the loop
+  const fx = new FX(scene, { arena });
+  const input = new NiumoInput(renderer.domElement);
+  const cam = new AutoCam(camera, { bounds: arena.bounds, arena, blockers: arena.cameraBlockers });
+  cam.bodies = () => [{ x: giant.pos.x, z: giant.pos.z, r: 8, top: 16 }];
+  const monkey = new Monkey({ actor, fx, audio: null, cam, input, arena, staff });
+  monkey.reset({ x: 0, z: 2, yaw: Math.PI });
+  cam.snapBehind(monkey.pos, Math.PI);
+
+  const composer = new EffectComposer(renderer);
+  composer.addPass(new RenderPass(scene, camera));
+  composer.addPass(new UnrealBloomPass(new THREE.Vector2(W, H), 0.55, 0.45, 0.9));
+  composer.addPass(new OutputPass());
+  const side = new THREE.PerspectiveCamera(36, W / H, 0.05, 400);
+
+  const T = window.__T = {
+    ready: false, model: monkeyUrl, staffGlb, time: 0, hitstop: 0, events: [], paused: Q.has('paused'), view: 'auto', fight: true,
+    monkey, giant, cam, input, fx, actor, staff, arena, THREE, MONKEY, MONKEY_TUNING, coneHitsSphere, coneHitsCapsule, sweepStaff,
+  };
+  const hud = document.getElementById('hud');
+  function tick(dt) {
+    T.time += dt;
+    input.update(dt);
+    let adt = dt;
+    if (T.hitstop > 0) { T.hitstop -= dt; adt = 0; }
+    const boss = T.fight ? giant : null;
+    monkey.update(adt, boss);
+    giant.update(adt, monkey);
+    cam.update(dt, monkey, T.fight ? giant : null, input.look(dt));
+    for (const e of monkey.events.splice(0)) {
+      T.events.push({ ...e, t: +T.time.toFixed(3), origin: undefined, dir: undefined, point: undefined, mt: monkey.a.move ? +monkey.a.move.t.toFixed(3) : -1 });
+      if (e.hitstop) T.hitstop = Math.max(T.hitstop, e.hitstop);
+      if (e.type === 'parry') T.hitstop = Math.max(T.hitstop, 0.11);
+      if (e.type === 'critical') T.hitstop = Math.max(T.hitstop, 0.24);
+    }
+    giant.events.length = 0;
+    fx.update(dt);
+  }
+  function placeSide() {
+    const m = monkey, f = new THREE.Vector3(Math.sin(m.yaw), 0, Math.cos(m.yaw)), r = new THREE.Vector3(-f.z, 0, f.x);
+    const c = m.pos.clone().add(new THREE.Vector3(0, 0.82, 0));
+    const which = T.view === 'front' ? f.clone().multiplyScalar(4.6) : T.view === 'back' ? f.clone().multiplyScalar(-4.6) : r.clone().multiplyScalar(-4.6);
+    side.position.copy(c).add(which).add(new THREE.Vector3(0, 0.25, 0));
+    side.lookAt(c.clone().add(f.clone().multiplyScalar(0.5)));
+  }
+  function render() {
+    const c = T.view === 'auto' ? camera : side;
+    if (T.view !== 'auto') placeSide();
+    updateLooks(c);
+    if (c === camera) composer.render(); else renderer.render(scene, c);
+  }
+  Object.assign(T, {
+    tick, render,
+    step(sec, dt = 1 / 60) { const n = Math.max(1, Math.round(sec / dt)); for (let i = 0; i < n; i++) tick(dt); render(); return T.state(); },
+    setView(v) { T.view = v; render(); },
+    place(x, z, yaw) { monkey.reset({ x, z, yaw }); cam.snapBehind(monkey.pos, yaw); cam.cut(); },
+    state() {
+      const m = monkey, mv = m.a.move;
+      return { t: +T.time.toFixed(3), state: m.state, move: mv ? mv.name : null, mt: mv ? +mv.t.toFixed(3) : -1, hp: +m.hp.toFixed(2), st: +m.st.toFixed(1), mp: +m.mp.toFixed(1),
+        charge: +m.charge.toFixed(3), pos: m.pos.toArray().map(v => +v.toFixed(3)), yaw: +m.yaw.toFixed(3), speed: +m.speed.toFixed(2), dead: m.dead,
+        lock: m.lockTarget ? m.lockTarget.part : null, focus: cam.focus ? cam.focus.part : null, camDist: +cam.dist.toFixed(2), camPitch: +cam.pitch.toFixed(3),
+        inv: m.invulnerable(), blocking: m.blocking, guardW: +m.guardW.toFixed(2), airborne: m.airborne, baseY: +m.baseY.toFixed(3), fanVis: m.fan.visible };
+    },
+    /** monkey and focus projected by the AutoCam (NDC) */
+    framing() {
+      camera.updateMatrixWorld(); const p = v => v.clone().project(camera);
+      const feet = p(monkey.pos), head = p(monkey.pos.clone().add(new THREE.Vector3(0, 1.5, 0))), mid = p(monkey.pos.clone().add(new THREE.Vector3(0, 0.9, 0)));
+      const f = cam.focus ? p(cam.F) : null;
+      const r = v => v && [+v.x.toFixed(3), +v.y.toFixed(3), +v.z.toFixed(3)];
+      return { feet: r(feet), head: r(head), mid: r(mid), focus: r(f), part: cam.focus ? cam.focus.part : null, dist: +cam.dist.toFixed(2), fov: +camera.fov.toFixed(1), pitch: +cam.pitch.toFixed(3), camY: +camera.position.y.toFixed(2) };
+    },
+    preview(name, t) { monkey.previewPose(name, t, T.fight ? giant : null); render(); return T.state(); },
+    /** frame cost: update + render, GPU-synced, over n frames */
+    perf(n = 240) {
+      const gl = renderer.getContext(), px = new Uint8Array(4);
+      let upd = 0, tot = 0;
+      for (let i = 0; i < n; i++) {
+        const t0 = performance.now();
+        tick(1 / 60);
+        const t1 = performance.now();
+        T.view = 'auto'; render();
+        gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+        const t2 = performance.now();
+        upd += t1 - t0; tot += t2 - t0;
+      }
+      return { updateMs: +(upd / n).toFixed(3), frameMs: +(tot / n).toFixed(3), calls: renderer.info.render.calls, tris: renderer.info.render.triangles };
+    },
+  });
+  let last = performance.now(), fpsAcc = 0, fpsN = 0;
+  T.fps = 0;
+  function frame(now) {
+    requestAnimationFrame(frame);
+    const raw = (now - last) / 1000; last = now;
+    if (T.paused) return;
+    tick(Math.min(raw, 1 / 20));
+    render();
+    fpsAcc += raw; fpsN++;
+    if (fpsAcc > 0.5) { T.fps = fpsN / fpsAcc; fpsAcc = 0; fpsN = 0; }
+    const s = T.state();
+    hud.textContent = `${s.state} ${s.move || ''} ${s.mt >= 0 ? s.mt : ''}\nhp ${s.hp.toFixed(0)}  st ${s.st.toFixed(0)}  mp ${s.mp.toFixed(0)}  charge ${s.charge.toFixed(2)}\nlock ${s.lock}  focus ${s.focus}  cam ${s.camDist}  ${T.fps.toFixed(0)} fps\n` +
+      `WASD 移动 · 空格 翻滚/按住奔跑 · J 轻击 · K 重击(按住蓄力) · L 格挡/弹反 · I 芭蕉扇 · 1-4 巨人姿态`;
+  }
+  addEventListener('keydown', e => {
+    if (e.code === 'Digit1') giant.setPose('rest'); if (e.code === 'Digit2') giant.setPose('slamL');
+    if (e.code === 'Digit3') giant.setPose('slamR'); if (e.code === 'Digit4') giant.setPose('bow');
+    if (e.code === 'Digit5') giant.strike({ delay: 0.6, dmg: 18, blockable: true });
+  });
+  requestAnimationFrame(frame);
+  render();
+  T.ready = true;
+}
+</script></body></html>

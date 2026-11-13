@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>牛魔王 · 测试台</title>
+<link rel="icon" href="data:,">
+<script type="importmap">{ "imports": { "three": "../node_modules/three/build/three.module.js", "three/addons/": "../node_modules/three/examples/jsm/" } }</script>
+<style>
+  html, body { margin: 0; height: 100%; background: #050304; overflow: hidden; color: #d9cbb8; font: 13px -apple-system, "PingFang SC", sans-serif; }
+  canvas { display: block; }
+  #hud { position: fixed; left: 10px; top: 8px; pointer-events: none; white-space: pre; text-shadow: 0 1px 2px #000; opacity: .85; }
+</style></head>
+<body><div id="hud"></div>
+<script>addEventListener('error', e => { window.__error = String(e.error && e.error.stack || e.message); }); addEventListener('unhandledrejection', e => { window.__error = String(e.reason && e.reason.stack || e.reason); });</script>
+<script type="module">
+// Test bench for src/niumo/bull.js: a flat burnt plain, three basalt pillars, the bull on his seat, a 1.5 m dummy.
+//   ?run       real-time loop (otherwise the puppeteer script steps the simulation)
+//   ?attack=x  start attack x right away (with ?run)
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { FX } from '../src/fx.js';
+import { loadCharacter } from '../src/assets.js';
+import { SFX_NAMES } from '../src/audio.js';
+import { BullKing, loadBullCharacter } from '../src/niumo/bull.js';
+
+const Q = new URLSearchParams(location.search);
+const W = innerWidth, H = innerHeight;
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance', preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(W, H);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(0x1a0d09, 0.0065);
+// smoke-choked sky: dark red at the horizon, black above
+{
+  const c = document.createElement('canvas'); c.width = 4; c.height = 256;
+  const g = c.getContext('2d'), grd = g.createLinearGradient(0, 0, 0, 256);
+  grd.addColorStop(0, '#050304'); grd.addColorStop(0.45, '#170807'); grd.addColorStop(0.72, '#3a120a'); grd.addColorStop(0.85, '#4a1a0c'); grd.addColorStop(1, '#1a0906');
+  g.fillStyle = grd; g.fillRect(0, 0, 4, 256);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace;
+  const sky = new THREE.Mesh(new THREE.SphereGeometry(400, 32, 16), new THREE.MeshBasicMaterial({ map: t, side: THREE.BackSide, fog: false, depthWrite: false }));
+  scene.add(sky);
+}
+const camera = new THREE.PerspectiveCamera(55, W / H, 0.1, 900);
+
+// lights: dim red sky, a cold rim from behind the bull, lava glow from the ground
+scene.add(new THREE.HemisphereLight(0x4a2a24, 0x150806, 0.9));
+const rim = new THREE.DirectionalLight(0x8a9cc0, 1.6);
+rim.position.set(-40, 70, -140); rim.target.position.set(0, 0, -20);
+rim.castShadow = true; rim.shadow.mapSize.set(2048, 2048);
+Object.assign(rim.shadow.camera, { left: -70, right: 70, top: 70, bottom: -70, near: 10, far: 320 }); rim.shadow.bias = -0.0006;
+scene.add(rim, rim.target);
+const warm = new THREE.DirectionalLight(0xff6a30, 0.55); warm.position.set(20, 8, 60); warm.target.position.set(0, 10, -30); scene.add(warm, warm.target);
+for (const [x, z] of [[-26, -6], [24, -2], [0, 20], [-40, 30], [38, 30]]) {
+  const l = new THREE.PointLight(0xff4a14, 260, 60, 1.6); l.position.set(x, 1.5, z); scene.add(l);
+}
+
+// ground: charcoal with a few smouldering cracks
+const groundTex = (() => {
+  const S = 1024, c = document.createElement('canvas'); c.width = c.height = S;
+  const g = c.getContext('2d');
+  g.fillStyle = '#16120f'; g.fillRect(0, 0, S, S);
+  for (let i = 0; i < 900; i++) { g.fillStyle = Math.random() < 0.5 ? '#1f1915' : '#0d0b0a'; g.globalAlpha = 0.5; g.beginPath(); g.arc(Math.random() * S, Math.random() * S, 2 + Math.random() * 16, 0, 7); g.fill(); }
+  g.globalAlpha = 1;
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(8, 8); return t;
+})();
+const crackTex = (() => {
+  const S = 1024, c = document.createElement('canvas'); c.width = c.height = S;
+  const g = c.getContext('2d'); g.fillStyle = '#000'; g.fillRect(0, 0, S, S);
+  g.strokeStyle = '#ff5a18'; g.lineCap = 'round';
+  for (let i = 0; i < 18; i++) {
+    let x = Math.random() * S, y = Math.random() * S; g.lineWidth = 1 + Math.random() * 3; g.globalAlpha = 0.5 + Math.random() * 0.5;
+    g.beginPath(); g.moveTo(x, y); for (let j = 0; j < 9; j++) { x += (Math.random() - 0.5) * 90; y += (Math.random() - 0.5) * 90; g.lineTo(x, y); } g.stroke();
+  }
+  const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(3, 3); return t;
+})();
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(400, 400), new THREE.MeshStandardMaterial({ map: groundTex, roughness: 0.96, metalness: 0,
+  emissive: new THREE.Color(0.55, 0.12, 0.02), emissiveMap: crackTex, emissiveIntensity: 0.7 }));
+ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; scene.add(ground);
+// the altar under him: a low slab half sunk in ash
+const altar = new THREE.Mesh(new THREE.CylinderGeometry(19, 21, 1.2, 8), new THREE.MeshStandardMaterial({ color: 0x1d1814, roughness: 0.92 }));
+altar.position.set(0, 0.6, -30); altar.receiveShadow = true; scene.add(altar);
+
+// basalt pillars (arena colliders) and a stone platform
+const colliders = [{ x: -16, z: 6, r: 2.6 }, { x: 15, z: 14, r: 3.0 }, { x: -6, z: 28, r: 2.4 }];
+const basalt = new THREE.MeshStandardMaterial({ color: 0x1a1613, roughness: 0.9, flatShading: true });
+for (const c of colliders) {
+  const h = 14 + c.r * 2;
+  const m = new THREE.Mesh(new THREE.CylinderGeometry(c.r * 0.92, c.r, h, 6), basalt);
+  m.position.set(c.x, h / 2, c.z); m.castShadow = m.receiveShadow = true; scene.add(m);
+}
+
+// ------------------------------------------------------------------ arena stub (docs/niumo_architecture.md §1)
+const shakes = [];
+const fxArena = { ripple() {}, disturbCandles() { return []; } };
+const arena = {
+  bounds: { minX: -60, maxX: 60, minZ: -60, maxZ: 60 },
+  playerSpawn: { x: 0, z: 40, yaw: Math.PI },
+  bullSeat: { x: 0, z: -30, yaw: 0, y: 1.2 },
+  groundY: () => 0,
+  lavaAt: () => 0,
+  colliders,
+  cameraBlockers: { circles: colliders, bounds: null },
+  update() {}, setPhase() {}, gradeHints: { exposure: 1, warm: 0, fog: 0 }, group: scene,
+  eruptions: [],
+  eruption(x, z, s = 1) {
+    this.eruptions.push({ x, z, s, t: bt.time });
+    const p = new THREE.Vector3(x, 0.3, z);
+    for (let i = 0; i < 40 * s; i++) fx.add.emit(p, new THREE.Vector3((Math.random() - 0.5) * 6, 6 + Math.random() * 14 * s, (Math.random() - 0.5) * 6), new THREE.Color(1, 0.35 + Math.random() * 0.2, 0.06), { size: 0.4 + Math.random() * 0.8, life: 0.8 + Math.random() * 0.8, drag: 0.4, grav: -16, alpha: 1 });
+    for (let i = 0; i < 4 * s; i++) fx.alpha.emit(new THREE.Vector3(x + (Math.random() - 0.5) * 3, 2, z + (Math.random() - 0.5) * 3), new THREE.Vector3(0, 3 + Math.random() * 3, 0), new THREE.Color(0.08, 0.07, 0.06), { size: 5 + Math.random() * 6, life: 2.5, drag: 0.5, grav: 0.3, alpha: 0.3, grow: 1.6 });
+    fx.light(new THREE.Vector3(x, 2, z), 0xff5a1a, 90 * s, 0.35, 25);
+  },
+  shake(k) { shakes.push(k); },
+};
+const fx = new FX(scene, { arena: fxArena });
+
+// audio stub: every sound must exist in the audio module (an unknown name would warn in the game)
+const KNOWN = new Set(SFX_NAMES);
+const audio = { played: [], play(name, opts) { if (!KNOWN.has(name)) console.error('unknown sfx ' + name); this.played.push(name); return null; } };
+const cam = { trauma: 0, addTrauma(k) { this.trauma = Math.min(1, this.trauma + k); }, punch() {}, zoomPunch() {} };
+
+// ------------------------------------------------------------------ dummy player (1.5 m)
+const heroine = await loadCharacter('../assets/models/heroine.glb', { height: 1.5 });
+scene.add(heroine.root);
+const mixer = new THREE.AnimationMixer(heroine.model);
+if (heroine.clips.idle) mixer.clipAction(heroine.clips.idle).play();
+const ring = new THREE.Mesh(new THREE.RingGeometry(0.5, 0.62, 32), new THREE.MeshBasicMaterial({ color: 0x9fd0ff, transparent: true, opacity: 0.6, depthWrite: false }));
+ring.rotation.x = -Math.PI / 2; scene.add(ring);
+const player = {
+  pos: heroine.root.position, yaw: Math.PI, speed: 0, hp: 1e9, dead: false, state: 'idle',
+  iframes: false, guard: null, hits: [], dodged: [], grabbed: 0,
+  takeHit(h) {
+    if (this.iframes) { this.dodged.push({ ...h, t: bt.time }); return false; }
+    if (this.guard && h.blockable) { this.hits.push({ ...h, t: bt.time, result: this.guard }); return this.guard; }
+    this.hits.push({ ...h, t: bt.time, result: true });
+    flash = 0.6;
+    return true;
+  },
+  onGrabbed() { this.grabbed++; }, onReleased() {},
+};
+let flash = 0;
+player.pos.set(0, 0, 10);
+
+// ------------------------------------------------------------------ the bull
+const char = await loadBullCharacter({ base: '../assets/models/' });
+const bull = new BullKing({ char, scene, fx, audio, arena, cam });
+
+// ------------------------------------------------------------------ post
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(new THREE.Vector2(W, H), 0.55, 0.45, 0.9);
+composer.addPass(bloom);
+composer.addPass(new OutputPass());
+
+// ------------------------------------------------------------------ control API
+const hud = document.getElementById('hud');
+const bt = window.__bt = {
+  THREE, scene, camera, renderer, bull, player, arena, fx, audio, cam, char, time: 0, view: 'eye', viewTarget: null,
+  errors: [],
+  step(seconds = 0, dt = 1 / 60) {
+    const n = Math.round(seconds / dt);
+    for (let i = 0; i < n; i++) this.tick(dt);
+    return this.status();
+  },
+  tick(dt) {
+    this.time += dt;
+    player.root = heroine.root;
+    heroine.root.rotation.y = player.yaw;
+    mixer.update(dt);
+    bull.update(dt, player);
+    fx.update(dt);
+    ring.position.set(player.pos.x, player.pos.y + 0.05, player.pos.z);
+    cam.trauma = Math.max(0, cam.trauma - dt);
+  },
+  /** eye: from the dummy's eyes; side / front / top: overview cameras; or { pos, look, fov }. */
+  setView(v, look) { this.view = v; this.viewTarget = look || null; this.applyView(); },
+  applyView() {
+    const v = this.view, p = player.pos;
+    let pos, look, fov = 55;
+    const th = bull.threat();
+    if (v === 'eye') {
+      pos = new THREE.Vector3(p.x, p.y + 1.45, p.z);
+      look = this.viewTarget ? new THREE.Vector3(...this.viewTarget) : new THREE.Vector3(bull.pos.x, 11, bull.pos.z);
+      const dir = look.clone().sub(pos).setY(0).normalize();
+      pos.addScaledVector(dir, -3.2).add(new THREE.Vector3(0, 0.6, 0));        // just behind the shoulder, the dummy in frame
+      fov = 62;
+    } else if (v === 'side') {
+      const mz = (bull.pos.z + p.z) / 2;
+      pos = new THREE.Vector3(bull.pos.x + 92, 16, mz + 4); look = new THREE.Vector3(bull.pos.x, 12, mz); fov = 45;
+    } else if (v === 'sideL') {
+      const mz = (bull.pos.z + p.z) / 2;
+      pos = new THREE.Vector3(bull.pos.x - 92, 16, mz + 4); look = new THREE.Vector3(bull.pos.x, 12, mz); fov = 45;
+    } else if (v === 'front') {
+      pos = new THREE.Vector3(bull.pos.x + 6, 14, bull.pos.z + 78); look = new THREE.Vector3(bull.pos.x, 13, bull.pos.z); fov = 45;
+    } else if (v === 'top') {
+      pos = new THREE.Vector3(bull.pos.x, 120, bull.pos.z + 32); look = new THREE.Vector3(bull.pos.x, 0, bull.pos.z + 30); fov = 50;
+    } else if (v === 'close') {
+      pos = new THREE.Vector3(...this.viewTarget.pos); look = new THREE.Vector3(...this.viewTarget.look); fov = this.viewTarget.fov || 40;
+    } else if (v && v.pos) { pos = new THREE.Vector3(...v.pos); look = new THREE.Vector3(...v.look); fov = v.fov || 50; }
+    void th;
+    camera.position.copy(pos); camera.lookAt(look);
+    if (camera.fov !== fov) { camera.fov = fov; camera.updateProjectionMatrix(); }
+  },
+  render() {
+    this.applyView();
+    composer.render();
+    const s = bull;
+    hud.textContent = `${s.state} ${s.atk ? s.atk.name + ' t=' + (s.a.move ? s.a.move.t.toFixed(2) : '-') : ''} hp ${Math.round(s.hp)}  phase ${s.phase}\n` +
+      Object.values(s.weak).map(w => `${w.part} ${w.broken ? '碎' : Math.round(w.hp)}`).join('  ') + `\nhits ${player.hits.length}`;
+  },
+  status() {
+    const s = bull, mv = s.a.move;
+    return { state: s.state, atk: s.atk && s.atk.name, t: mv ? +mv.t.toFixed(3) : null, move: mv && mv.name, hp: Math.round(s.hp), phase: s.phase,
+      hits: player.hits.length, lastHit: player.hits.at(-1) || null, dodged: player.dodged.length, pos: s.pos.toArray().map(v => +v.toFixed(2)), yaw: +s.yaw.toFixed(3),
+      events: s.events.splice(0).map(e => e.type + (e.name ? ':' + e.name : '') + (e.part ? ':' + e.part : '') + (e.stage ? ':' + e.stage : '')) };
+  },
+  /** Flat grey studio light (geometry inspection). */
+  debugLight(on) {
+    if (!this._dbg) { this._dbg = new THREE.HemisphereLight(0xffffff, 0x666666, 3.2); this._dbg.visible = false; scene.add(this._dbg); }
+    this._dbg.visible = on; scene.fog.density = on ? 0.0005 : 0.0065;
+  },
+  /** Bone world positions (for clipping checks). */
+  bones(names) { const o = {}; for (const n of names) o[n] = bull.bonePos(n).toArray().map(v => +v.toFixed(2)); return o; },
+  /** Max frame throughput: n frames of simulation + render back to back, then a GPU sync. */
+  bench(n = 120, dt = 1 / 60) {
+    const gl = renderer.getContext(), px = new Uint8Array(4);
+    this.render(); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    const t0 = performance.now();
+    let sim = 0;
+    for (let i = 0; i < n; i++) { const s0 = performance.now(); this.tick(dt); sim += performance.now() - s0; this.applyView(); composer.render(); }
+    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    const ms = (performance.now() - t0) / n;
+    return { msPerFrame: +ms.toFixed(2), fps: +(1000 / ms).toFixed(1), simMs: +(sim / n).toFixed(2), calls: renderer.info.render.calls, tris: renderer.info.render.triangles };
+  },
+  /** Real-time frames for `sec` seconds (requestAnimationFrame): average and worst frame interval. */
+  realtime(sec = 4) {
+    return new Promise(res => {
+      const dts = []; let last = performance.now(), t = 0;
+      const f = now => {
+        const d = (now - last) / 1000; last = now; t += d; dts.push(d);
+        this.tick(Math.min(d, 1 / 20)); this.render();
+        if (t < sec) requestAnimationFrame(f);
+        else { dts.shift(); dts.sort((a, b) => a - b); const avg = dts.reduce((a, b) => a + b, 0) / dts.length;
+          res({ fps: +(1 / avg).toFixed(1), p95ms: +(dts[Math.floor(dts.length * 0.95)] * 1000).toFixed(1), frames: dts.length }); }
+      };
+      requestAnimationFrame(f);
+    });
+  },
+};
+
+bull.autoAttack = false;
+bt.step(0.1);
+bt.render();
+if (Q.has('run')) {
+  bull.wake(); bull.autoAttack = !Q.get('attack');
+  if (Q.get('attack')) setTimeout(() => bull.forceAttack(Q.get('attack'), player), 1500);
+  let last = performance.now();
+  const loop = now => { const d = Math.min(0.05, (now - last) / 1000); last = now; bt.tick(d); bt.render(); requestAnimationFrame(loop); };
+  requestAnimationFrame(loop);
+}
+window.__ready = true;
+</script></body></html>

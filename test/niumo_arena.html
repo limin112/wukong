@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>火焰山 · 场景测试</title>
+<link rel="icon" href="data:,">
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas { display: block; }
+  #hud { position: fixed; left: 8px; top: 6px; color: #b9a99a; font: 12px/1.4 ui-monospace, monospace; white-space: pre; pointer-events: none; z-index: 2; text-shadow: 0 1px 2px #000; }
+</style>
+<script type="importmap">
+{ "imports": { "three": "../node_modules/three/build/three.module.js", "three/addons/": "../node_modules/three/examples/jsm/" } }
+</script>
+</head>
+<body>
+<div id="hud"></div>
+<script type="module">
+// Volcano arena test bench (docs/niumo_architecture.md section 1).
+//   ?phase=0..3        phase (snapped)          ?cam=spawn|mid|low|gameplay|side|lava|top|back|archway|seat
+//   ?q=high|medium|low quality                  ?notex=1  procedural textures only
+//   ?shots=1           no rAF loop (driven through window.__* hooks by a headless script)
+//   ?nostandins=1      hide the giant / capsule  ?hide=name,name  hide scene objects by name
+// Interactive: drag to orbit, wheel to zoom, 0-3 phase, E eruption, K shake (rocks), C next camera, F free fly (WASD/QE).
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { FXAAPass } from 'three/addons/postprocessing/FXAAPass.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { createVolcanoArena } from '../src/niumo/arena.js';
+
+const params = new URLSearchParams(location.search);
+const SHOTS = params.has('shots');
+const hud = document.getElementById('hud');
+window.__errors = [];
+window.addEventListener('error', (e) => window.__errors.push(String(e.message || e)));
+window.addEventListener('unhandledrejection', (e) => window.__errors.push(String(e.reason && e.reason.stack || e.reason)));
+
+const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
+renderer.setPixelRatio(1);
+renderer.setSize(innerWidth, innerHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFShadowMap;
+renderer.info.autoReset = false;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.05, 400);   // as the cathedral main.js
+
+const t0 = performance.now();
+const opts = { scene, renderer, quality: params.get('q') || 'high' };
+if (params.has('notex')) opts.textures = { basalt: null, ash: null, crust: null };
+let arena;
+try {
+  arena = await createVolcanoArena(opts);
+} catch (e) {
+  window.__errors.push('createVolcanoArena: ' + (e && e.stack || e));
+  throw e;
+}
+const buildMs = performance.now() - t0;
+window.__arena = arena;
+if (params.has('hide')) for (const n of params.get('hide').split(',')) scene.traverse((o) => { if (o.name === n) o.visible = false; });
+
+// --- stand-ins: a seated giant of dark boxes (~22 m) and a 1.5 m capsule ----------------------------------------
+const standins = new THREE.Group();
+standins.name = 'standins';
+scene.add(standins);
+const rockMat = new THREE.MeshStandardMaterial({ color: 0x1e1a17, roughness: 0.85, metalness: 0.05 });
+const bronzeMat = new THREE.MeshStandardMaterial({ color: 0x3a3a2a, roughness: 0.55, metalness: 0.75 });
+const eyeMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(2.2, 0.25, 0.05) });
+const giant = new THREE.Group();
+const box = (w, h, d, x, y, z, mat = rockMat, rx = 0, ry = 0, rz = 0) => {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+  m.position.set(x, y, z); m.rotation.set(rx, ry, rz);
+  giant.add(m);
+  return m;
+};
+box(19, 4.6, 11, 0, 2.3, 0.5);                       // crossed legs
+box(4.6, 4.2, 5.5, -7.6, 2.6, 4.2, rockMat, 0, 0.3);  // knees
+box(4.6, 4.2, 5.5, 7.6, 2.6, 4.2, rockMat, 0, -0.3);
+box(10.5, 9.5, 6.5, 0, 9.6, -1.2);                    // torso
+box(15.5, 3.4, 6.2, 0, 15.6, -1.0);                   // shoulders
+box(9, 1.6, 0.7, 0, 9.8, 2.0, bronzeMat);             // belt plate
+box(3, 7.5, 3, -8.6, 11.5, 0.2, rockMat, 0.35, 0, 0.12);  // upper arms
+box(3, 7.5, 3, 8.6, 11.5, 0.2, rockMat, 0.35, 0, -0.12);
+box(2.6, 6.5, 2.6, -8.2, 6.4, 4.4, rockMat, 1.1, 0, 0);   // forearms on the knees
+box(2.6, 6.5, 2.6, 8.4, 7.4, 3.6, rockMat, 0.4, 0, 0);
+box(3.4, 3.8, 4.4, 0, 19.3, 0.2, bronzeMat);          // bull head
+box(2.6, 2.0, 2.4, 0, 18.4, 2.4, bronzeMat);          // muzzle
+for (const s of [-1, 1]) {
+  box(0.9, 0.9, 6.5, s * 3.6, 21.6, 0.2, bronzeMat, 0, 0, s * 0.55).rotation.order = 'YXZ';
+  box(0.7, 0.7, 4.2, s * 6.4, 23.6, 0.6, bronzeMat, -0.3, 0, s * 1.2);
+  const eye = new THREE.Mesh(new THREE.SphereGeometry(0.16, 10, 8), eyeMat);
+  eye.position.set(s * 0.95, 19.9, 2.45);
+  giant.add(eye);
+}
+const staff = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.55, 30, 12), new THREE.MeshStandardMaterial({ color: 0x15120f, roughness: 0.6, metalness: 0.6 }));
+staff.position.set(11.6, 14, 4.0); staff.rotation.z = -0.06;
+giant.add(staff);
+const seatY = arena.groundY(arena.bullSeat.x, arena.bullSeat.z);
+giant.position.set(arena.bullSeat.x, seatY, arena.bullSeat.z);
+giant.rotation.y = arena.bullSeat.yaw;
+standins.add(giant);
+const hero = new THREE.Mesh(new THREE.CapsuleGeometry(0.3, 0.9, 6, 14), new THREE.MeshStandardMaterial({ color: 0x6b5530, roughness: 0.5, metalness: 0.6 }));
+hero.name = 'hero';
+standins.add(hero);
+function placeHero(x, z) { hero.position.set(x, arena.groundY(x, z) + 0.75, z); }
+placeHero(arena.playerSpawn.x, arena.playerSpawn.z);
+standins.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+if (params.has('nostandins')) standins.visible = false;
+
+// --- post: bloom -> grade (reads arena.gradeHints) -> ACES output -> FXAA (as the cathedral's main.js) ------------
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.6, 0.5, 0.95);
+composer.addPass(bloom);
+const grade = new ShaderPass({
+  uniforms: { tDiffuse: { value: null }, uTime: { value: 0 }, uVignette: { value: 0.5 }, uWarm: { value: 0 }, uDesat: { value: 0.1 }, uFog: { value: 0 } },
+  vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }',
+  fragmentShader: /* glsl */`
+    uniform sampler2D tDiffuse; uniform float uTime, uVignette, uWarm, uDesat, uFog; varying vec2 vUv;
+    float hash(vec2 p){ return fract(sin(dot(p, vec2(12.9898,78.233))) * 43758.5453); }
+    void main(){
+      vec2 c = vUv - 0.5; float r = length(c);
+      vec2 off = c * 0.0006;
+      vec3 col = vec3(texture2D(tDiffuse, vUv + off).r, texture2D(tDiffuse, vUv).g, texture2D(tDiffuse, vUv - off).b);
+      float l = dot(col, vec3(0.2126, 0.7152, 0.0722));
+      col = mix(col, vec3(l), uDesat);
+      col *= mix(vec3(0.86, 0.93, 1.12), vec3(1.08, 1.0, 0.88), smoothstep(0.03, 1.1, l));
+      col = mix(col, col * (uWarm > 0.0 ? vec3(1.12, 1.0, 0.82) : vec3(0.86, 0.95, 1.12)), abs(uWarm));
+      col = mix(col, vec3(0.012, 0.007, 0.006) + col * 0.92, uFog * 0.5);
+      col *= 1.0 - uVignette * smoothstep(0.32, 0.85, r);
+      col += (hash(vUv * 1000.0 + uTime) - 0.5) * 0.012;
+      gl_FragColor = vec4(col, 1.0);
+    }`,
+});
+composer.addPass(grade);
+composer.addPass(new OutputPass());
+composer.addPass(new FXAAPass());
+
+// --- cameras -------------------------------------------------------------------------------------------------------
+const S = arena.bullSeat, P = arena.playerSpawn;
+const CAMS = {
+  spawn: { pos: [0.9, 2.5, P.z + 4.6], look: [0, 9.5, S.z], fov: 55 },                     // behind the player at the start
+  mid: { pos: [4.5, 1.7, -4], look: [-1, 17, S.z], fov: 62, hero: [3.2, -7.5] },          // mid-arena, looking up at him
+  low: { pos: [-10.6, 0.35, -2.5], look: [0, 12.5, S.z], fov: 60, hero: [-8.6, -6.2] },   // low angle past the basalt
+  gameplay: { pos: [3.4, 3.1, 4.5], look: [0, 6.5, S.z], fov: 55, hero: [2.0, -1.0] },
+  side: { pos: [-36, 7, 8], look: [-2, 5, -20], fov: 55, hero: [-14, 2] },
+  lava: { pos: [-18.6, 1.5, -1.5], look: [-25.4, -0.3, -9], fov: 60, hero: [-20.2, -4.5] },
+  top: { pos: [0, 120, 46], look: [0, 0, -6], fov: 60 },
+  back: { pos: [-22, 9, -46], look: [0, 6, 0], fov: 60 },
+  archway: { pos: [-1.6, 1.8, 36.5], look: [-2, 5, 20], fov: 60, hero: [0, 34] },
+  seat: { pos: [-2.5, 1.2, -14.5], look: [0, 20, -31], fov: 68, hero: [-1.6, -16.5] },
+};
+let camName = params.get('cam') || 'spawn';
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = false;
+function setCam(name) {
+  const c = CAMS[name] || CAMS.spawn;
+  camName = name;
+  camera.position.set(...c.pos);
+  camera.fov = c.fov;
+  camera.updateProjectionMatrix();
+  controls.target.set(...c.look);
+  camera.lookAt(...c.look);
+  controls.update();
+  camera.updateMatrixWorld();
+  const h = c.hero || [P.x, P.z];
+  placeHero(h[0], h[1]);
+}
+window.__setCam = setCam;
+
+let elapsed = 0;
+function step(seconds, dt = 1 / 60) {
+  const n = Math.max(1, Math.round(seconds / dt));
+  for (let i = 0; i < n; i++) { elapsed += dt; arena.update(dt, elapsed, camera); }
+}
+function applyGrade() {
+  const g = arena.gradeHints;
+  renderer.toneMappingExposure = g.exposure;
+  grade.uniforms.uWarm.value = g.warm;
+  grade.uniforms.uDesat.value = g.desat;
+  grade.uniforms.uFog.value = g.fog;
+  grade.uniforms.uTime.value = elapsed;
+  bloom.strength = g.bloom;
+}
+function render() {
+  renderer.info.reset();
+  applyGrade();
+  composer.render();
+}
+function info() {
+  const i = renderer.info;
+  return { calls: i.render.calls, triangles: i.render.triangles, points: i.render.points, lines: i.render.lines, geometries: i.memory.geometries, textures: i.memory.textures, programs: i.programs.length };
+}
+window.__step = (s) => step(s);
+window.__render = () => { render(); return info(); };
+window.__setPhase = (p, instant = true) => arena.setPhase(p, { instant });
+window.__eruption = (x, z, k) => arena.eruption(x, z, k);
+window.__shake = (k) => arena.shake(k);
+window.__info = info;
+window.__showStandins = (v) => { standins.visible = v; };
+window.__resize = (w, h) => { renderer.setSize(w, h); composer.setSize(w, h); camera.aspect = w / h; camera.updateProjectionMatrix(); };
+// Throughput: frames back to back, GPU drained at the end; plus the arena's own CPU time per update.
+window.__bench = (frames = 120) => {
+  const gl = renderer.getContext();
+  const px = new Uint8Array(4);
+  render(); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+  let cpu = 0;
+  const t = performance.now();
+  for (let i = 0; i < frames; i++) {
+    elapsed += 1 / 60;
+    const c0 = performance.now();
+    arena.update(1 / 60, elapsed, camera);
+    cpu += performance.now() - c0;
+    render();
+  }
+  gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+  const total = performance.now() - t;
+  return { msPerFrame: total / frames, arenaCpuMs: cpu / frames, ...info() };
+};
+// GPU cost of the arena alone: the same view rendered with the arena hidden vs shown
+window.__benchArena = (frames = 90) => {
+  const gl = renderer.getContext();
+  const px = new Uint8Array(4);
+  const run = () => {
+    render(); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    const t = performance.now();
+    for (let i = 0; i < frames; i++) { elapsed += 1 / 60; arena.update(1 / 60, elapsed, camera); render(); }
+    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    return (performance.now() - t) / frames;
+  };
+  const withArena = run();
+  arena.group.visible = false;
+  const without = run();
+  arena.group.visible = true;
+  return { withArena, without, arenaMs: withArena - without };
+};
+
+setCam(camName);
+arena.setPhase(Number(params.get('phase') || 0), { instant: true });
+step(Number(params.get('t') || 0.5));
+render();
+renderer.getContext().finish();
+window.__buildMs = buildMs;
+window.__ready = true;
+
+// --- interactive ----------------------------------------------------------------------------------------------------
+if (!SHOTS) {
+  const keys = new Set();
+  let fly = false, yaw = 0, pitch = 0;
+  addEventListener('keydown', (e) => {
+    keys.add(e.code);
+    if (/^Digit[0-3]$/.test(e.code)) arena.setPhase(Number(e.code.slice(5)));
+    if (e.code === 'KeyE') { const a = Math.random() * Math.PI * 2; arena.eruption(hero.position.x + Math.cos(a) * 6, hero.position.z + Math.sin(a) * 6 - 4, 1); }
+    if (e.code === 'KeyK') arena.shake(1);
+    if (e.code === 'KeyC') { const names = Object.keys(CAMS); setCam(names[(names.indexOf(camName) + 1) % names.length]); fly = false; controls.enabled = true; }
+    if (e.code === 'KeyF') {
+      fly = !fly; controls.enabled = !fly;
+      const d = camera.getWorldDirection(new THREE.Vector3()); yaw = Math.atan2(-d.x, -d.z); pitch = Math.asin(d.y);
+    }
+  });
+  addEventListener('keyup', (e) => keys.delete(e.code));
+  addEventListener('pointermove', (e) => { if (fly && e.buttons) { yaw -= e.movementX * 0.003; pitch = THREE.MathUtils.clamp(pitch - e.movementY * 0.003, -1.5, 1.5); } });
+  addEventListener('resize', () => window.__resize(innerWidth, innerHeight));
+  let last = performance.now(), acc = 0, n = 0, fps = 0;
+  const loop = (now) => {
+    const dt = Math.min(0.1, (now - last) / 1000); last = now;
+    acc += dt; n++;
+    if (acc > 0.5) { fps = n / acc; acc = 0; n = 0; }
+    if (fly) {
+      camera.rotation.set(pitch, yaw, 0, 'YXZ');
+      const v = new THREE.Vector3(keys.has('KeyD') - keys.has('KeyA'), keys.has('KeyE') - keys.has('KeyQ'), keys.has('KeyS') - keys.has('KeyW'));
+      camera.position.add(v.multiplyScalar(dt * (keys.has('ShiftLeft') ? 24 : 8)).applyEuler(new THREE.Euler(0, yaw, 0)));
+    }
+    elapsed += dt;
+    arena.update(dt, elapsed, camera);
+    render();
+    const i = renderer.info.render, g = arena.gradeHints;
+    const lava = arena.lavaAt(hero.position.x, hero.position.z);
+    hud.textContent = `fps ${fps.toFixed(0)}  calls ${i.calls}  tris ${(i.triangles / 1000).toFixed(0)}k  phase ${arena.phase}  collapse ${arena.collapse.toFixed(2)}  cam ${camName}\n`
+      + `grade exp ${g.exposure.toFixed(2)} warm ${g.warm.toFixed(2)} fog ${g.fog.toFixed(2)}  hero lava ${lava.toFixed(2)}\n`
+      + `[0-3 phase  E eruption  K rocks  C camera  F fly]`;
+    requestAnimationFrame(loop);
+  };
+  requestAnimationFrame(loop);
+}
+</script>
+</body>
+</html>

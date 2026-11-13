@@ -1,0 +1,19 @@
+{
+  "name": "niumo",
+  "version": "0.2.0",
+  "description": "火焰山 · 牛魔 — a dark souls-like boss fight in the browser (Three.js, ES modules, no build step)",
+  "private": true,
+  "scripts": {
+    "start": "node serve.mjs 5174",
+    "test": "node test/niumo_smoke.mjs all",
+    "test:monkey": "node test/niumo_monkey.mjs",
+    "test:audio": "node test/audio_check.mjs --no-wav",
+    "demo:record": "node tools/record_demo.mjs --seconds 120"
+  },
+  "dependencies": {
+    "three": "0.187.0"
+  },
+  "devDependencies": {
+    "puppeteer-core": "25.17.0"
+  }
+}
