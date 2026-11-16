@@ -419,7 +419,7 @@ try {
 
   if (want('niumo') && !NAME) {
     // ---- phase1 -> phase2 stays on the beat grid: drums only, no reverb, onset times vs the phase1 grid
-    await setHooks({ mute: ['monk', 'choir', 'lava', 'gong', 'cymbal', 'tbell', 'muyu', 'suona', 'phrase', 'droll', 'boom', 'sbass', 'brass', 'pluck', 'strings'], dry: true });
+    await setHooks({ mute: ['monk', 'choir', 'lava', 'gong', 'cymbal', 'tbell', 'muyu', 'suona', 'phrase', 'droll', 'boom', 'sbass', 'brass', 'pluck', 'strings', 'slead', 'arp', 'zap'], dry: true });
     const g = await page.evaluate(() => window.renderMusic('niumo_phase1', { seconds: 37, script: [[30, 'setMusic', 'niumo_phase2', { fade: 0.6 }]] }));
     await setHooks({});
     const pcm = decodeWav(g.wav);

@@ -23,7 +23,9 @@ let n = 0, bytes = 0;
 const put = (from, rel) => { copy(from, path.join(out, rel)); n++; bytes += fs.statSync(from).size; };
 
 // the game
-for (const dir of ['src', 'assets']) walk(path.join(ROOT, dir), f => { if (!/\.DS_Store$/.test(f)) put(f, path.relative(ROOT, f)); });
+// (assets/audio/<music state>.mp3 are local music overrides - a recording someone plays at home - and never go public)
+const LOCAL_ONLY = /(\.DS_Store|assets\/audio\/[a-z0-9_]+\.mp3)$/;
+for (const dir of ['src', 'assets']) walk(path.join(ROOT, dir), f => { if (!LOCAL_ONLY.test(f)) put(f, path.relative(ROOT, f)); });
 
 // three.js: the module build and every addon the sources import, with what those import
 const need = new Set([path.join(THREE_DIR, 'build/three.module.js')]);

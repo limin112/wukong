@@ -39,12 +39,14 @@ export class Rig {
     this.R = new THREE.Vector3(); this.U = new THREE.Vector3(); this.F = new THREE.Vector3();
     this.frame();
     this.gripCurl = 0;
+    this.curled = { Left: 0, Right: 0 };   // how far curl() closed each hand since the frame's pose was reset
   }
 
-  /** Refresh the character axes from the root's world orientation (+Z forward). */
-  frame() {
+  /** Refresh the character axes from the root's world orientation (+Z forward) - or, given one, from that object's
+   *  (the pivot: a pose with bodyFrame aims its limbs in the turning body's frame, so a tuck stays a tuck upside down). */
+  frame(from = null) {
     this.root.updateMatrixWorld(true);
-    this.root.getWorldQuaternion(_q);
+    (from || this.root).getWorldQuaternion(_q);
     this.F.set(0, 0, 1).applyQuaternion(_q);
     this.U.set(0, 1, 0).applyQuaternion(_q);
     this.R.crossVectors(this.F, this.U).normalize(); // forward x up = right
@@ -113,11 +115,12 @@ export class Rig {
     const thumb = this.b[side + 'HandThumb1'];
     const mid = this.b[side + 'HandMiddle1'];
     if (!thumb || !mid) return;
+    this.curled[side] = (this.curled[side] || 0) + amount * w;
     const fingerDir = mid.getWorldPosition(_a).sub(hand.getWorldPosition(_b)).normalize();
     const thumbDir = thumb.getWorldPosition(_c).sub(_b).normalize();
     // palm normal points away from the back of the hand; curl axis bends fingers toward the palm
     const axis = new THREE.Vector3().crossVectors(fingerDir, thumbDir).normalize();
-    if (side === 'Left') axis.negate();
+    // (no mirror flip for the left hand: the cross product above already changes sign with the mirrored thumb)
     const rot = new THREE.Quaternion();
     for (const f of ['Index', 'Middle', 'Ring', 'Pinky']) {
       for (let i = 1; i <= 3; i++) {
@@ -132,6 +135,7 @@ export class Rig {
   /**
    * Apply an evaluated pose with global weight W. The pose fields are optional:
    *   pivot: { pitch, roll, yaw (deg), y (fraction of height), z }   whole-body transform about the hips
+   *   bodyFrame: true aims everything after the pivot in the turned body's frame (rolls: the tuck turns with him)
    *   hips: [r,u,f] offset in leg lengths; hipsTurn: [pitch, yaw, roll] deg
    *   spine: [pitch(+forward), yaw(+toward right), roll(+lean right)] deg, spread over Spine/Spine1/Spine2
    *   head: [pitch, yaw, roll] deg over Neck/Head
@@ -151,13 +155,16 @@ export class Rig {
       // in world metres, have to be taken back into the root's own units, or a tumble throws him out of the world)
       const ps = this.pivot.parent ? this.pivot.parent.getWorldScale(new THREE.Vector3()).y || 1 : 1;
       this.pivot.position.set(0, (pv.y || 0) * this.h * W / ps, (pv.z || 0) * this.h * W / ps);
-      this.pivot.rotation.set((pv.pitch || 0) * DEG * W, (pv.yaw || 0) * DEG * W, (pv.roll || 0) * DEG * W);
+      // (angles are taken to -180..180 first: a roll that ends at 360 is upright, and blending 360 * W back to 0 as the
+      // move faded out spun him a whole extra turn at the end of every roll)
+      const wrapDeg = (a) => ((((a || 0) + 180) % 360) + 360) % 360 - 180;
+      this.pivot.rotation.set(wrapDeg(pv.pitch) * DEG * W, wrapDeg(pv.yaw) * DEG * W, wrapDeg(pv.roll) * DEG * W);
       // rotate about the hips height instead of the feet
       const hy = this.hipsRestY * 0.85 / ps;
       const off = new THREE.Vector3(0, hy, 0).applyEuler(this.pivot.rotation);
       this.pivot.position.add(new THREE.Vector3(0, hy, 0).sub(off));
       this.pivot.updateMatrixWorld(true);
-      this.frame();
+      this.frame(p.bodyFrame ? this.pivot : null);
     }
     const B = this.b;
     if (p.hips) {

@@ -239,8 +239,8 @@ async function parry() {
 }
 
 async function iframes() {
-  console.log('\n[iframes] roll / backflip invulnerability');
-  for (const kind of ['roll', 'backflip']) {
+  console.log('\n[iframes] roll / back roll invulnerability');
+  for (const kind of ['roll', 'rollB']) {
     await setup({ x: 0, z: 0, yaw: Math.PI, pose: 'rest' });
     if (kind === 'roll') await page.keyboard.down('KeyW');
     await tap('Space');

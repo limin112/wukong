@@ -4,3 +4,5 @@ test/out/
 *.log
 .env
 .env.*
+# local music overrides (assets/audio/<state>.mp3): personal recordings, not part of the game
+assets/audio/*.mp3

@@ -316,7 +316,47 @@ if (!LOOK_PRESETS.niumoMonkey) {
 /** The monkey's look: the black-and-gold preset (the crimson cape is in the model's own texture). Idempotent. */
 export function dressMonkey(char) {
   const model = char && (char.model || char.root);
-  if (model && !model.userData.look) { applyLook(model, 'niumoMonkey'); polishMask(model); }
+  // The masked model (concept/niumo_w_monkey8_front.png, clean gold mask). polishMask polishes the front of the face
+  // (and sets eyes in its holes); keepFaceSkin keeps the rest of the head - the orange-brown fur - out of the gold test.
+  if (model && !model.userData.look) { applyLook(model, 'niumoMonkey'); polishMask(model); keepFaceSkin(model); }
+}
+
+/**
+ * His face is skin and fur, not gold. The look preset turns every warm, saturated, light colour into polished gold
+ * (right for the armour's trim), and the tan face and the light brown crown of fur fell into that range: the new,
+ * unmasked head rendered as a gold mask. Everything skinned to the head and neck is kept out of that colour test; the
+ * gold circlet stays metal through the model's own metalness map.
+ */
+function keepFaceSkin(model) {
+  model.traverse(mesh => {
+    if (!mesh.isSkinnedMesh) return;
+    const g = mesh.geometry, si = g.attributes.skinIndex, sw = g.attributes.skinWeight;
+    if (!si || !sw || g.attributes.lkSkin) return;
+    const names = mesh.skeleton.bones.map(b => b.name.replace(/^mixamorig:?/, ''));
+    const head = new Set(['Head', 'HeadTop_End', 'Neck', 'LeftEye', 'RightEye'].map(n => names.indexOf(n)).filter(i => i >= 0));
+    const skin = new Float32Array(si.count);
+    for (let v = 0; v < si.count; v++) {
+      let w = 0;
+      for (let k = 0; k < 4; k++) if (head.has(si.getComponent(v, k))) w += sw.getComponent(v, k);
+      skin[v] = Math.min(1, Math.max(0, (w - 0.3) / 0.4));
+    }
+    const mk = g.attributes.lkMask;          // polishMask's mask area stays gold
+    if (mk) for (let v = 0; v < si.count; v++) skin[v] *= 1 - Math.min(1, mk.getX(v) * 1.6);
+    g.setAttribute('lkSkin', new THREE.BufferAttribute(skin, 1));
+    for (const m of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) {
+      if (!m || m.userData.skinKept) continue;
+      m.userData.skinKept = true;
+      const prev = m.onBeforeCompile;
+      m.onBeforeCompile = (shader, r) => {
+        prev?.(shader, r);
+        shader.vertexShader = 'attribute float lkSkin;\nvarying float vLkSkin;\n' + shader.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\n  vLkSkin = lkSkin;');
+        shader.fragmentShader = 'varying float vLkSkin;\n' + shader.fragmentShader.replace('lkGoldM = lkD.w *', 'lkGoldM = ( 1.0 - vLkSkin ) * lkD.w *');
+      };
+      const key = mk ? 'look-v1-mask-skin' : 'look-v1-skin';
+      m.customProgramCacheKey = () => key;
+      m.needsUpdate = true;
+    }
+  });
 }
 
 /** Which way the bind pose faces (the generated rigs are not all exported facing +Z): from the foot to the toe. */
@@ -379,6 +419,8 @@ function addMaskEyes(mesh, headBone, hi, ti) {
  * there as real polished gold: full metal, smooth, one even colour that takes its light and shade from the sky it
  * mirrors instead of from the paint. Hair, ears, eye sockets and neck keep the model's own surface.
  */
+// the top of the mask (the circlet) above the head bone, in head sizes: the fur above it keeps its own colour
+const MASK_TOP = 0.42;
 export function polishMask(model) {
   const meshes = [];
   model.traverse(o => { if (o.isSkinnedMesh) meshes.push(o); });
@@ -399,7 +441,7 @@ export function polishMask(model) {
         for (let k = 0; k < 4; k++) if (headish.has(si.getComponent(v, k))) w += sw.getComponent(v, k);
         if (w < 0.5) continue;
         p.fromBufferAttribute(pos, v).applyMatrix4(mesh.bindMatrix).sub(hp);
-        mask[v] = ss(0.02, 0.22, p.dot(F) / size) * ss(-0.25, 0.0, p.y / size) * ss(0.5, 0.8, w);
+        mask[v] = ss(0.02, 0.22, p.dot(F) / size) * ss(-0.25, 0.0, p.y / size) * (1 - ss(MASK_TOP - 0.08, MASK_TOP, p.y / size)) * ss(0.5, 0.8, w);
       }
     }
     g.setAttribute('lkMask', new THREE.BufferAttribute(mask, 1));
@@ -535,11 +577,12 @@ export async function loadMonkeyAssets({ base = 'assets/models/', height = 1.5 }
 }
 
 export function createMonkeyActor(char, staff, scene) {
-  return new Actor(char, { lib: MONKEY, hold: MONKEY_HOLD, sword: staff, scene });
+  return new Actor(char, { lib: MONKEY, hold: MONKEY_HOLD, sword: staff, scene, fist: true });
 }
 
 // ------------------------------------------------------------------ the controller
 
+const ROLLS = new Set(['roll', 'rollB', 'rollL', 'rollR', 'backflip']);
 const MOVE_STATES = new Set(['attack', 'roll', 'hurt', 'knockdown', 'blockHit', 'parry', 'fan', 'critical', 'land', 'vault', 'fall']);
 const k0 = o => ({ t: 0, ...o });
 
@@ -643,6 +686,7 @@ export class Monkey {
   inCancelWindow() { const mv = this.a.move; return !!(mv && mv.def.cancel !== undefined && mv.t >= mv.def.cancel); }
   invulnerable() {
     const mv = this.a.move;
+    if (this.dodgeSafe) return true;          // (the opening bullet time: a roll in it is safe until the staff has landed)
     return !!(mv && mv.def.iframes && mv.t >= mv.def.iframes[0] && mv.t <= mv.def.iframes[1]);
   }
   /** (a giant's blows and steps cost a little less) */
@@ -663,7 +707,7 @@ export class Monkey {
 
   startMove(name, opts = {}) {
     const mv = this.a.startMove(name, this.giant && opts.speed === undefined ? { ...opts, speed: this.T.giantPace } : opts);
-    this.state = ATTACKS.has(name) ? 'attack' : name === 'backflip' ? 'roll' : name;
+    this.state = ATTACKS.has(name) ? 'attack' : ROLLS.has(name) ? 'roll' : name;
     mv.landed = new Set(); this.moveYaw = null;
     if (ATTACKS.has(name)) this.stepIn(mv);
     return mv;
@@ -757,16 +801,22 @@ export class Monkey {
     if (inp.peek('roll', 0.3) && this.st > 0) {
       inp.take('roll', 0.3);
       const m = this.wishDir(_v);
-      let name = m > 0.2 ? 'roll' : 'backflip', stepYaw = null;
+      // four rolls along the ground (2026-11-16 user): locked on, the keys pick front / back / left / right relative to
+      // the enemy and he keeps facing him (the side rolls travel along moveYaw); no key is the back roll. Not locked,
+      // he turns the way the keys point and rolls forward.
+      let name = 'rollB', stepYaw = null;
       const lt = this.lockTarget;
-      if (this.giant && lt) {
-        // 法相天地, locked on: a real tumble the way the keys point - he turns into it, goes over his shoulder and
-        // comes up turning back to the bull; straight back (or with no key held) it is the back flip, still facing him
-        const face = Math.atan2(lt.pos.x - this.pos.x, lt.pos.z - this.pos.z);
-        const want = m > 0.2 ? Math.atan2(_v.x, _v.z) : face + Math.PI;
-        if (Math.abs(wrap(want - face)) > 2.36) { name = 'backflip'; this.yaw = face; }
-        else { name = 'roll'; this.yaw = want; }
-      } else if (m > 0.2) this.yaw = Math.atan2(_v.x, _v.z);
+      const face = lt ? Math.atan2(lt.pos.x - this.pos.x, lt.pos.z - this.pos.z) : this.yaw;
+      if (m > 0.2) {
+        const want = Math.atan2(_v.x, _v.z), rel = wrap(want - face);
+        if (!lt || Math.abs(rel) < Math.PI / 4) { name = 'roll'; this.yaw = lt ? face : want; }
+        else if (Math.abs(rel) > 3 * Math.PI / 4) { name = 'rollB'; this.yaw = face; }
+        else {
+          // right of the facing is (-cos, 0, sin) of the yaw (forward x up)
+          name = _v.x * -Math.cos(face) + _v.z * Math.sin(face) > 0 ? 'rollR' : 'rollL';
+          this.yaw = face; stepYaw = face + (name === 'rollR' ? -Math.PI / 2 : Math.PI / 2);
+        }
+      } else this.yaw = face;
       this.spend(MONKEY[name].stamina);
       this.startMove(name);
       this.state = 'roll'; this.moveYaw = stepYaw;
@@ -1392,10 +1442,15 @@ export class Monkey {
   afterActor(dt, boss, mv) {
     // a tumble turns him about his hips, and with the tuck that put his head and back under the floor for a few
     // frames (a giant vanished into the lake): carry the whole body up so that nothing of his trunk goes below it
-    if (mv && (mv.name === 'roll' || mv.name === 'backflip') && this.a.char.pivot) {
-      const pv = this.a.char.pivot, floor = this.pos.y + 0.16 * this.S;
-      const low = Math.min(this.a.bonePos('Hips', _a).y, this.a.bonePos('Head', _b).y, this.a.bonePos('Spine2', _c1).y);
-      if (low < floor) { pv.position.y += (floor - low) / this.S; pv.updateMatrixWorld(true); }
+    if (mv && ROLLS.has(mv.name) && this.a.char.pivot) {
+      // ... and in the middle of a ground roll the ball sits ON the floor: whichever is lowest (trunk, head, a foot or
+      // a hand) is brought down to it as well as up, so he never floats a hand's breadth above the rock
+      const pv = this.a.char.pivot, S = this.S, P = (n, v) => this.a.bonePos(n, v).y;
+      const trunk = Math.min(P('Hips', _a), P('Head', _b), P('Spine2', _c1)) - (this.pos.y + 0.13 * S);
+      const limbs = Math.min(P('LeftFoot', _a), P('RightFoot', _b), P('LeftHand', _c1), P('RightHand', _c2)) - (this.pos.y + 0.05 * S);
+      let d = -Math.min(trunk, limbs);
+      if (d < 0) { const t = mv.t; d *= Math.max(0, Math.min(1, (t - 0.01) / 0.05)) * Math.max(0, Math.min(1, (0.56 - t) / 0.1)); }
+      if (Math.abs(d) > 1e-4) { pv.position.y += d / S; pv.updateMatrixWorld(true); this.a.grip.y += d; }   // (the fist moved with him)
     }
     this.updateStaff(mv);
     this.leftHand();
@@ -1465,8 +1520,9 @@ export class Monkey {
     rig.frame();
     const pole = rig.dir([-0.6, -0.65, -0.3], _c2);
     rig.ik(B.LeftArm, B.LeftForeArm, B.LeftHand, target, pole, w);
-    const curled = (a.move ? (a.lastPose?.gripL || 0) * a.moveW : 0) + (a.guard?.gripL || 0) * (a.move ? 1 - a.moveW : 1);
-    if (w - curled > 0.05) rig.curl('Left', w - curled, 1);
+    if (this.ringW > 0.001 && a.move && a.move.name === 'critical') {
+      if (w - rig.curled.Left > 0.05) rig.curl('Left', w - rig.curled.Left, 1);
+    } else a.fistLeft(w);            // on the rod: the knuckles along it, the fist closed round it
   }
 
   updateFan() {

@@ -231,6 +231,19 @@ const SCEN = {
     check(await G('G.monkey.hp === G.monkey.maxHp && G.bull.duel'), 'he is whole again and the duel is on');
     const said = await G('G.voice.log.map(l => l.id + (l.audible ? "" : "(silent)")).join(" ")');
     check(said === 'p1 p2 p3 p4', 'the 山崩 lines are spoken (牛魔王, 孙悟空, 牛魔王, 孙悟空): ' + said);
+    // 金身: every 20% of his health lost he turns gold for 3 s; one blow breaks it and rocks him
+    await G('(G.bull.autoAttack = false, G.bull.goldPending = false, G.bull.goldNext = 0.4, G.bull.hp = G.bull.maxHp * 0.41, true)');
+    await page.waitForFunction(() => window.__niumo.bull.state === 'idle', { timeout: 15000, polling: 50 });
+    await G('G.hitBull(G.bull.maxHp * 0.02, "body")');
+    await page.waitForFunction(() => window.__niumo.bull.goldK > 0.9, { timeout: 5000, polling: 20 }).catch(() => {});
+    const gold = await G('({ t: G.bull.goldT, k: G.bull.goldK })');
+    check(gold.t > 1.5 && gold.k > 0.9, `金身: under 40% he turns gold (${gold.t.toFixed(2)} s left, glow ${gold.k.toFixed(2)})`);
+    await shot('gold');
+    await G('G.hitBull(1, "body")');
+    await sleep(100);
+    const broke = await G('({ t: G.bull.goldT, state: G.bull.state })');
+    check(broke.t === 0 && broke.state === 'stagger', `a blow breaks the gold and he staggers (${broke.state})`);
+    await G('(G.bull.autoAttack = true, true)');
     console.log('  ', JSON.stringify(await status()));
   },
 

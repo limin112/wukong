@@ -505,7 +505,7 @@ const STANCE = {
 const SKID = {
   pivot: { roll: 0, pitch: 0, y: 0 }, hips: [0, -0.44, -0.04], spine: [30, 10, 0], head: [-30, -8, 0],
   legL: { at: [-0.3, -0.52, 0.34], pole: [-0.3, 0.2, 1] }, legR: { at: [0.26, -0.62, -0.52], pole: [0.2, -0.2, 1] },
-  armL: { at: [-0.2, -0.9, 0.36], pole: [-0.7, -0.2, -0.4], hand: [0, -0.3, 1], w: 1 }, gripL: 0,
+  armL: { at: [-0.2, -0.9, 0.36], pole: [-0.7, -0.2, -0.4], hand: [0, -0.3, 1], w: 1 }, gripL: 0.85,   // a loose fist on the knee (the model's open fingers splay like a claw)
   armR: { at: [0.56, -0.22, -0.36], pole: [0.6, -0.5, -0.4] }, blade: [0.6, 0.28, -0.75], grip: 1,
 };
 // sitting on the horn: thighs forward, shins hanging, the staff across the lap, face lifted a little to the rain
@@ -903,7 +903,7 @@ export class CollapseScene extends Scene {
         this.go('sweep');
         this.cutTo('sweep', 2.6);
         bull.aimYaw = THREE.MathUtils.clamp(bull.relAngle(this.mpos), -1, 1);
-        bull.playMove('sweepLow', { aim: true });
+        bull.playMove('sweepLow', { aim: true, speed: 1.6 });          // (2026-11-16 user: the sweep has to come faster)
         this.audio.play('staff_swing', { pos: this.bf.head(), volume: 0.9, pitch: 0.4 });
       }
       return this.said === 'p2' && this.answerT !== undefined && t - this.answerT > 0.35 ? 'cinePoint' : 'cineStance';
@@ -912,7 +912,7 @@ export class CollapseScene extends Scene {
     switch (this.act) {
       case 'sweep': {
         const hitAt = (mv && mv.def.contactAt) || 1.62;
-        if (bt > hitAt - 0.34) this.rate = 0.2;                      // the last of it in slow motion
+        if (bt > hitAt - 0.2) this.rate = 0.5;                       // only the very end slows, and not by much
         if (bt >= hitAt - 0.03 || this.at > 6) {
           // it takes him
           this.go('fly'); this.cutTo('flung', 1.9);
@@ -928,7 +928,7 @@ export class CollapseScene extends Scene {
       }
       case 'fly': {
         const dur = 1.05, u = clamp01(this.at / dur);
-        this.rate = THREE.MathUtils.lerp(0.3, 1, smooth(0.05, 0.4, this.at));
+        this.rate = THREE.MathUtils.lerp(0.55, 1, smooth(0.03, 0.25, this.at));
         if (u < 1) {
           this.mpos.copy(this.from).lerp(this.land, u);
           this.mpos.y = THREE.MathUtils.lerp(this.groundAt(this.from), this.groundAt(this.land), u) + 4 * 4.2 * u * (1 - u);

@@ -25,7 +25,7 @@ import { FX } from '../fx.js';
 import { updateLooks } from '../look.js';
 import { separate, horizDist } from '../combat.js';
 import { createVolcanoArena } from './arena.js';
-import { BullKing, loadBullCharacter } from './bull.js';
+import { BullKing, loadBullCharacter, loadWhiteBull } from './bull.js';
 import { Monkey, loadMonkeyAssets, createMonkeyActor } from './monkey.js';
 import { NiumoInput } from './input.js';
 import { AutoCam } from './camera.js';
@@ -202,7 +202,7 @@ async function boot() {
   const [arena, audioRes] = await Promise.all([createVolcanoArena({ scene, renderer, quality: FLAG.quality }), loadAudio()]);
   if (!scene.environment) { scene.environment = volcanoEnv(); scene.environmentIntensity = 0.9; }
   setLoad('载入角色…');
-  const [bullChar, mAssets] = await Promise.all([loadBullCharacter({ height: SCALE.bull }), loadMonkeyAssets({ height: SCALE.monkey })]);
+  const [bullChar, mAssets, beast] = await Promise.all([loadBullCharacter({ height: SCALE.bull }), loadMonkeyAssets({ height: SCALE.monkey }), loadWhiteBull()]);
   const monkeyChar = mAssets.char, monkeyStaff = mAssets.staff;
   const { audio, cues } = audioRes;
   scene.add(bullChar.root, monkeyChar.root);
@@ -222,7 +222,7 @@ async function boot() {
   const monkey = new Monkey({ actor, fx, audio, cam, input, arena, staff: monkeyStaff });
 
   let bullStaff = null;
-  const makeBull = () => new BullKing({ char: bullChar, scene, fx, audio, arena, cam, staff: bullStaff });
+  const makeBull = () => new BullKing({ char: bullChar, scene, fx, audio, arena, cam, staff: bullStaff, beast });
   let bull = makeBull();
   bullStaff = bull.staff;      // reuse the same rod if the bull is ever rebuilt
   setLoad('');
@@ -449,6 +449,8 @@ async function boot() {
       if (e.type === 'enrage') { ui.card_('牛魔王 · 现真身', 'name', 2.6, '烈 火 披 身 · 用 芭 蕉 扇 扇 灭 它<i>His true form: wreathed in fire — blow it out with the fan</i>'); if (monkey.mp !== undefined) monkey.mp = maxOf(monkey, 'Mp', 100);
         G.slowmo = 0.5; G.slowmoT = 0.8; cam.pullBack?.(1, 3); cam.addTrauma?.(0.6); G.heatKick = Math.max(G.heatKick || 0, 0.8); }
       if (e.type === 'down') { G.slowmo = 0.5; G.slowmoT = 0.6; }
+      if (e.type === 'gold') { G.flash = Math.max(G.flash, 0.12); cam.addTrauma?.(0.25); }
+      if (e.type === 'goldBreak') { G.hitstop = Math.max(G.hitstop, 0.22); G.slowmo = 0.35; G.slowmoT = 0.6; G.flash = Math.max(G.flash, 0.2); G.aberr = 1; input.rumble?.(1, 0.8, 300); }
       // 'critical' { stage: 'open' } = his head is down (the hint shows); { stage: 'hit' } (or no stage) = 牵牛鼻子 lands
       if (e.type === 'critical' && e.stage !== 'open') { G.hitstop = Math.max(G.hitstop, 0.2); G.slowmo = 0.3; G.slowmoT = 0.7; G.flash = Math.max(G.flash, 0.18); }
       if (e.type === 'phase2' && G.state === 'fight') beginTransition();
@@ -613,6 +615,7 @@ async function boot() {
   const K = k => `<kbd>${k}</kbd>`;
   // the English under every tip (matched by a phrase of the Chinese; first match wins)
   const TIP_EN = [
+    ['子弹时间', `Bullet time — ${K('Space')} roll out from under it!`], ['躲开了', 'Dodged!'],
     ['横扫', `Sweep — hold ${K('L')} to guard`], ['破绽', `Opening! ${K('J')}`], ['连扫两下', `Two sweeps — keep ${K('L')} held`],
     ['震地火浪', `Fire wave — ${K('Space')} through it as it reaches you`], ['火雨要来了', 'Fire rain coming — watch the red rings'],
     ['火雨——跑出', `Fire rain — out of the red rings! He is roaring: hit him ${K('J')}`], ['冲撞', `Charge — ${K('Space')} to the side`],
@@ -622,6 +625,7 @@ async function boot() {
     ['巨掌', 'Giant palm — out of the shadow on the ground'], ['手掌落地了', `The hand is down — strike it! ${K('J')}`],
     ['架势崩了', `Posture broken — all out! ${K('J')} ${K('K')}`], ['他站不稳了', `He is staggered — all out! ${K('J')}`],
     ['脚下是熔岩', `Lava underfoot — run out (or fan it out ${K('I')})`], ['火甲挡住了', `The fire armour holds — break it with the fan ${K('I')} (or a parry)`],
+    ['金身', `Golden body — one hit ${K('J')} shatters it and stuns him`],
   ];
   function coach() {
     if (G.state !== 'fight' || monkey.dead || bull.dead) { ui.setGoal(''); ui.setTip(''); ui.setKeys(''); return; }
@@ -657,7 +661,9 @@ async function boot() {
         if (!at.fired.has('impact')) { tip = `砸棍——${K('空格')} 闪开`; kind = 'danger'; }
         else { tip = `破绽！${K('J')} 连击`; kind = 'go'; }
       } else if (at.name === 'slam') {
-        if (!at.fired.has('impact')) { tip = `砸棍——${K('空格')} 往旁边翻开`; kind = 'danger'; }
+        if (at.bt && !at.bt.done && !at.bt.rolled) { tip = `子弹时间——${K('空格')} 从棍下翻出去！（不按他也会自己躲）`; kind = 'danger'; }
+        else if (at.bt && at.bt.rolled && !at.bt.hit && (!at.fired.has('impact') || t < def.impactAt + 0.6)) { tip = '躲开了！'; kind = 'go'; }
+        else if (!at.fired.has('impact')) { tip = `砸棍——${K('空格')} 往旁边翻开`; kind = 'danger'; }
         else if (at.resting || t < (def.restAt ?? 2.6) + 1) { tip = `趁现在，敲他的铁棍！${K('J')}`; kind = 'go'; }
       } else if (at.name === 'palmL' || at.name === 'palmR') {
         if (t < def.impactAt) { tip = '巨掌——跑出地上的影子'; kind = 'danger'; }
@@ -669,8 +675,49 @@ async function boot() {
       if (inFire) { tip = `脚下是熔岩——快跑出去（或 ${K('I')} 芭蕉扇 扇灭）`; kind = 'danger'; }
       else if (G.armorTip > 0 && bull.armored && kind !== 'danger') { tip = `火甲挡住了——${K('I')} 芭蕉扇 破防（弹反也行）`; kind = 'danger'; }
     }
+    if (bull.goldT > 0 && kind !== 'danger') { tip = `金身！打他一下 ${K('J')} 金身就碎，他会僵直`; kind = 'go'; }
     if (tip) { const en = TIP_EN.find(([key]) => tip.includes(key)); if (en) tip += `<i>${en[1]}</i>`; }
     ui.setTip(tip, kind);
+  }
+
+  /**
+   * 子弹时间 (2026-11-16 user: the first blow needs a bullet-time dodge, or it is dull): as he holds the staff over his
+   * head for the opening blow, time all but stops and the screen says roll; the roll plays out in slow motion under the
+   * falling staff, and time comes back once it has hit the ground. Only for the fight's opening slam (the cinematic has
+   * its own); a blow taken in it ends it at once.
+   */
+  function openingBulletTime() {
+    const at = bull.state === 'attack' ? bull.atk : null, mv = bull.a?.move;
+    if (!at || !at.opening || at.name !== 'slam' || !mv || monkey.dead || G.state !== 'fight') { monkey.dodgeSafe = false; return; }
+    const def = at.def, t = mv.t;
+    if (!at.bt) {
+      if (t < def.holdAt - 0.12 || at.fired.has('impact')) return;
+      at.bt = { rolled: false, hit: false, done: false, hp: monkey.hp };
+      G.flash = Math.max(G.flash, 0.12); cam.addTrauma?.(0.15);
+      audio.play('staff_swing', { pos: bull.staffTip, volume: 0.8, pitch: 0.3 });
+    }
+    const b = at.bt;
+    if (b.done) return;
+    if (monkey.hp < b.hp) b.hit = true;
+    if (monkey.state === 'roll' && !b.hit) b.rolled = true;
+    const landed = at.fired.has('impact') && t > def.impactAt + 0.15;
+    // a roll started in the bullet time carries him clear: safe until the staff is down (the window is long and slow,
+    // and the staff is thirty metres of iron; the point is the moment, not a frame-perfect press)
+    // no key pressed by the last moment: he rolls out by himself (2026-11-16 user: the automatic dodge of the
+    // cinematic was the good part) - sideways, away from where the staff comes down, still facing the bull
+    if (!b.rolled && !b.hit && t >= def.impactAt - 0.32 && !at.fired.has('impact')) {
+      const face = Math.atan2(bull.pos.x - monkey.pos.x, bull.pos.z - monkey.pos.z);
+      const right = Math.random() < 0.5;
+      monkey.a.stopMove?.();
+      monkey.startMove(right ? 'rollR' : 'rollL');
+      monkey.state = 'roll'; monkey.yaw = face; monkey.moveYaw = face + (right ? -Math.PI / 2 : Math.PI / 2);
+      monkey.sfx?.(['monkey_roll', 'roll_ash', 'swing_light'], { pos: monkey.pos, volume: 0.45, pitch: 0.62 });
+      b.rolled = true; b.auto = true;
+    }
+    monkey.dodgeSafe = b.rolled && !landed;
+    if (b.hit || (landed && monkey.state !== 'roll')) { b.done = true; monkey.dodgeSafe = false; G.slowmo = 1; G.slowmoT = 0; return; }
+    G.slowmo = b.rolled ? 0.3 : 0.16; G.slowmoT = 0.25;        // (refreshed every frame; it lapses by itself)
+    G.aberr = Math.max(G.aberr, 0.35);
   }
 
   function frame() {
@@ -736,6 +783,7 @@ async function boot() {
         break;
       case 'fight':
       case 'dead': {
+        openingBulletTime();
         if (G.bot) { G.bot.setActive(G.state === 'fight'); G.bot.update(adt); }
         monkey.update(adt, bull.dead ? null : bull);
         bull.update(adt, monkey);
