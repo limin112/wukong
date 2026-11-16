@@ -231,7 +231,7 @@ const SCEN = {
     check(await G('G.monkey.hp === G.monkey.maxHp && G.bull.duel'), 'he is whole again and the duel is on');
     const said = await G('G.voice.log.map(l => l.id + (l.audible ? "" : "(silent)")).join(" ")');
     check(said === 'p1 p2 p3 p4', 'the 山崩 lines are spoken (牛魔王, 孙悟空, 牛魔王, 孙悟空): ' + said);
-    // 金身: every 20% of his health lost he turns gold for 3 s; one blow breaks it and rocks him
+    // 金身: every 20% of his health lost he turns gold for 3 s; a blow on it does nothing and the monkey reels
     await G('(G.bull.autoAttack = false, G.bull.goldPending = false, G.bull.goldNext = 0.4, G.bull.hp = G.bull.maxHp * 0.41, true)');
     await page.waitForFunction(() => window.__niumo.bull.state === 'idle', { timeout: 15000, polling: 50 });
     await G('G.hitBull(G.bull.maxHp * 0.02, "body")');
@@ -239,10 +239,25 @@ const SCEN = {
     const gold = await G('({ t: G.bull.goldT, k: G.bull.goldK })');
     check(gold.t > 1.5 && gold.k > 0.9, `金身: under 40% he turns gold (${gold.t.toFixed(2)} s left, glow ${gold.k.toFixed(2)})`);
     await shot('gold');
-    await G('G.hitBull(1, "body")');
+    const hpG = await G('G.bull.hp');
+    await G('G.hitBull(50, "body")');
     await sleep(100);
-    const broke = await G('({ t: G.bull.goldT, state: G.bull.state })');
-    check(broke.t === 0 && broke.state === 'stagger', `a blow breaks the gold and he staggers (${broke.state})`);
+    const reb = await G('({ hp: G.bull.hp, gold: G.bull.goldT, bull: G.bull.state, monkey: G.monkey.state, move: G.monkey.a.move && G.monkey.a.move.def.name })');
+    check(reb.hp === hpG && reb.gold > 0, `a blow on the gold does nothing to him (hp ${Math.round(hpG)} -> ${Math.round(reb.hp)}, still gold)`);
+    check(reb.monkey === 'hurt' && reb.bull !== 'stagger', `the monkey reels (${reb.monkey}, bull ${reb.bull})`);
+    // 冲撞 as the white bull: a step aside when the coach says 现在闪 takes nothing
+    await page.waitForFunction(() => { const G = window.__niumo; return G.bull.goldT <= 0 && G.bull.state === 'idle' && G.monkey.state === 'idle'; }, { timeout: 15000, polling: 50 });
+    await G('(() => { const b = G.bull, m = G.monkey, f = b.fwd(); m.pos.x = b.pos.x + f.x * 150; m.pos.z = b.pos.z + f.z * 150; b.forceAttack("charge", m); return true; })()');
+    await page.waitForFunction(() => window.__niumo.bull.beastOn, { timeout: 8000, polling: 16 });
+    await shot('beast');
+    check(await G('G.bull.beast.root.visible && !G.chars.bull.root.visible'), '冲撞: he runs as the white bull');
+    await page.waitForFunction(() => { const at = window.__niumo.bull.atk; return !at || at.dodgeNow; }, { timeout: 8000, polling: 8 });
+    const hpM = await G('G.monkey.hp');
+    await key('Space');
+    await page.waitForFunction(() => { const at = window.__niumo.bull.atk; return !at || at.fired.has('skid'); }, { timeout: 8000, polling: 20 });
+    check(await G('G.monkey.hp') === hpM, `a step aside at 现在闪 dodges the charge (hp ${hpM} -> ${await G('G.monkey.hp')})`);
+    await page.waitForFunction(() => !window.__niumo.bull.beastOn, { timeout: 8000, polling: 20 });
+    check(await G('G.chars.bull.root.visible'), 'he is the bull king again after the skid');
     await G('(G.bull.autoAttack = true, true)');
     console.log('  ', JSON.stringify(await status()));
   },

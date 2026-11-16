@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>白牛 · 测试场</title>
+<link rel="icon" href="data:,">
+<script type="importmap">{ "imports": { "three": "../node_modules/three/build/three.module.js", "three/addons/": "../node_modules/three/examples/jsm/" } }</script>
+<style>html, body { margin: 0; height: 100%; background: #3a3633; overflow: hidden; } canvas { display: block; }</style></head>
+<body>
+<script type="module">
+// Test bed for the white bull's procedural gallop (bull.js gallopPose). window.__W.pose(ph, k, view) poses and renders;
+// window.__W.hooves() returns the hoof heights (m). Driven by test/niumo_whitebull.mjs.
+import * as THREE from 'three';
+import { loadWhiteBull, gallopPose, hoofLift, BULL_TUNING } from '../src/niumo/bull.js';
+addEventListener('error', e => { window.__error = String(e.error && e.error.stack || e.message); });
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight); renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene(); scene.background = new THREE.Color(0x3a3633);
+scene.add(new THREE.HemisphereLight(0xfff4e6, 0x5a4a40, 1.4));
+const sun = new THREE.DirectionalLight(0xffffff, 2.2); sun.position.set(-60, 120, 80); scene.add(sun);
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(600, 600), new THREE.MeshStandardMaterial({ color: 0x55504a }));
+floor.rotation.x = -Math.PI / 2; scene.add(floor);
+scene.add(new THREE.GridHelper(600, 60, 0x777066, 0x666058));
+const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 1, 3000);
+try {
+  const b = await loadWhiteBull({ base: '../assets/models/' });
+  const L = BULL_TUNING.beastLen * BULL_TUNING.height, k = L / b.len;
+  b.root.visible = true; b.root.scale.setScalar(k); scene.add(b.root);
+  const left = new THREE.Vector3(1, 0, 0);          // he faces +Z: his left is +X
+  const hoofNames = ['0_Left_Limb_3', '0_Right_Limb_3', '1_Left_Limb_3', '1_Right_Limb_3'];
+  window.__W = {
+    L,
+    pose(ph, kk = 1, view = 'side') {
+      gallopPose(b, ph, kk, left);
+      b.root.position.y = 0; b.root.position.y = -hoofLift(b);
+      b.root.updateMatrixWorld(true);
+      const c = new THREE.Vector3(0, L * 0.3, 0);
+      if (view === 'side') camera.position.set(-L * 1.9, L * 0.35, 0);
+      else if (view === 'q') camera.position.set(-L * 1.3, L * 0.45, L * 1.3);
+      else camera.position.set(0, L * 0.35, L * 1.9);
+      camera.lookAt(c); renderer.render(scene, camera);
+      return true;
+    },
+    hooves() { return hoofNames.map(n => b.bones[n] ? +b.bones[n].getWorldPosition(new THREE.Vector3()).y.toFixed(1) : null); },
+  };
+  window.__ready = true;
+} catch (e) { window.__error = String(e && e.stack || e); }
+</script></body></html>

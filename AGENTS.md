@@ -48,6 +48,7 @@ tools/gen_voice.mjs     配音：通过 ZenMux 调 Gemini TTS 生成 assets/audi
 ```bash
 node test/niumo_smoke.mjs all        # boot, mv, fight, phase2, ending, demo，全部 PASSED，零控制台错误
 node test/niumo_monkey.mjs           # 悟空 85 项
+node test/niumo_whitebull.mjs        # 大白牛奔跑步态：八相位图 + 蹄子着地
 node test/audio_check.mjs --no-wav   # 动了音频才跑
 ```
 
@@ -58,7 +59,7 @@ node test/audio_check.mjs --no-wav   # 动了音频才跑
 
 ## 规矩
 
-- **美术设定 `docs/niumo_style.md` 是最终标准**：魂系的厚重，但画面是明亮的——火烧云黄昏、HDR 天空、低角度的太阳；牛魔王戴金面具（用户给的模型），悟空戴干净抛光的金面具（2026-11-16 用户定）。
+- **美术设定 `docs/niumo_style.md` 是最终标准**：魂系的厚重，但画面是明亮的——火烧云黄昏、HDR 天空、低角度的太阳；牛魔王戴金面具（用户给的模型），悟空是最初那个戴金面具的悟空（2026-11-17 用户定，别再换）。
 - **禁止**照搬《黑神话：悟空》的任何具体造型、UI、关卡或音乐。
 - 模型的骨骼名是 Mixamo 那一套。新模型要和现有的模型同名、同骨骼，直接替换文件；和网格位置相关的数字放在 `BULL_TUNING`（bull.js）和 `MONKEY_TUNING`（monkey.js）里。
 - 用户没有明确要求，不要 commit 或 push。
@@ -73,8 +74,9 @@ node test/audio_check.mjs --no-wav   # 动了音频才跑
 6. **握棍**：姿势只管手臂，手掌由 `Actor.fistOn / fistLeft / wrapHand`（actor.js，悟空和牛魔王的 Actor 都开了 `fist: true`）在每帧最后转到「指节线顺着棍子」，再把每节手指逐节绕到棍子上（指尖略收进棍身，模型手指偏长），左手离棍子够近时也会被带上去握住。改招式时不用再管 `grip` 的手型。
 7. **换过模型（2026-11-16）**：
    - 牛魔王：用户给的 Tripo 模型（FBX，`hunxi/out/tripo/niumo_bull4_src`），Tripo 重新绑 Mixamo 骨、套 idle/walk/run。上传 FBX 时贴图会丢，`hunxi/tools/render/attach_texture.mjs` 把原贴图挂回去。约 1 万面，鬃毛偏块面。
-   - 悟空：`concept/niumo_w_monkey8_front.png`（monkey7 的身体、干净抛光金面具），Tripo P2、Mixamo、idle/walk/run。`polishMask` 抛光面具（只到金箍，`MASK_TOP`），`keepFaceSkin` 让头上其余部分（棕红毛发）不参与「按颜色判金」。不戴面具的版本（monkey9）留在 hunxi，`BUILD_MONKEY9=1` 可打包回来。
-   - 大白牛（牛魔王原形）：`concept/niumo_w_whitebull_side.png`，Tripo P2、四足绑骨、只有一个 walk 动作，`assets/models/niumo_whitebull.glb`。冲撞的奔跑段（`runAt`–`runEnd` 再加 0.5 秒刹车）他变成大白牛（`bull.syncBeast / setBeast`），走路动作加速播成奔跑。
+   - 悟空：最初的模型（monkey7，`polishMask` 把面具抛光）。2026-11-16 试过不戴面具的 monkey9 和干净金面具的 monkey8，用户 11-17 要回最初的；那两个留在 hunxi（`BUILD_MONKEY=...`）。
+   - 朝向：`loadCharacter` 按胯骨左右连线自动校正朝向。用户给的牛魔王文件朝 +Z，原先统一转 −90° 让他整场侧身对人。
+   - 大白牛（牛魔王原形）：`concept/niumo_w_whitebull_side.png`，Tripo P2、四足绑骨，`assets/models/niumo_whitebull.glb`，长 `beastLen`×40 m（84 m）。冲撞的奔跑段（`runAt`–`runEnd` 再加刹车）他变成大白牛（`bull.syncBeast / setBeast`）；奔跑步态是程序化的（`gallopPose`，`test/niumo_whitebull.mjs` 出八相位图并查蹄子着地），身体按最低的蹄子贴地（`hoofLift`）。
 8. **结局**：悟空全程保持巨人，站位取自最后一击时的位置，机位是按两人的连线算的；如果恰好贴着围墙结束战斗，前景可能被石柱或岩壁挡住一部分。
 9. 序幕里贴身时镜头会被他的手臂和腿占满（近镜头的肢体会抖动透明化，过场特写用 `bkNearK` 关掉）。
 
