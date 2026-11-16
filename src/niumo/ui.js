@@ -33,17 +33,18 @@ export class NiumoUI extends UI {
   get chapterText() { return this.chapter.querySelector('.page')?.dataset.text || ''; }
 
   /** One narration line of the opening cinematic ('' hides it). */
-  narrate(text) {
+  narrate(text, en = '') {
     if (text === this.narr) return;
     this.narr = text;
     if (text) {
       this.mvText.textContent = text; this.mvText.dataset.text = text; this.mvText.dataset.speaker = '';
+      this.addEn_(en);
       this.mvText.classList.remove('line'); this.mvText.classList.add('on');
     } else this.mvText.classList.remove('on');
   }
 
   /** A spoken line: the speaker's name small above it (same place as the narration; '' hides it). */
-  speak(name, text, speaker = '') {
+  speak(name, text, speaker = '', en = '') {
     const key = text ? name + '|' + text : '';
     if (key === this.narr) return;
     this.narr = key;
@@ -53,7 +54,43 @@ export class NiumoUI extends UI {
     const who = document.createElement('span'); who.className = 'who'; who.textContent = name;
     el.append(who, document.createTextNode(text));
     el.dataset.text = text; el.dataset.speaker = speaker;
+    this.addEn_(en);
     el.classList.add('on', 'line');
+  }
+  /** The English subtitle, small under the line. */
+  addEn_(en) {
+    if (!en) return;
+    const e = document.createElement('span'); e.className = 'en'; e.textContent = en;
+    this.mvText.append(e);
+  }
+
+  /** What to do now (under the bars); html allowed: <b>3 / 6</b>. '' hides it. */
+  setGoal(html) { this.html_('#goal', html); }
+  /** The answer to what he is doing (large, low in the middle). kind: 'danger' (his blow) | 'go' (your opening) | ''. */
+  setTip(html, kind = '') {
+    const el = this.html_('#tip', html);
+    if (el && html) { el.classList.toggle('danger', kind === 'danger'); el.classList.toggle('go', kind === 'go'); }
+  }
+  /** The keys, along the bottom edge. */
+  setKeys(html) { this.html_('#keyline', html); }
+  html_(sel, html) {
+    const el = $(sel);
+    if (!el) return null;
+    const cur = el.dataset.html || '';
+    if (cur !== html) { if (html) el.innerHTML = html; el.dataset.html = html; el.classList.toggle('on', !!html); }
+    return el;
+  }
+
+  /** His posture (架势) under his health: f 0..1 (-1 hides it); it fills as blows land and breaks when full. */
+  setPosture(f, broken = false) {
+    const el = this.postureEl || (this.postureEl = $('#posture'));
+    if (!el) return;
+    const on = f >= 0;
+    if (on !== this.postureOn) { this.postureOn = on; el.classList.toggle('on', on); }
+    if (!on) return;
+    const w = Math.round(f * 1000) / 10;
+    if (w !== this.postureW) { this.postureW = w; el.firstElementChild.style.width = w + '%'; }
+    if (broken !== this.postureBroken) { this.postureBroken = broken; el.classList.toggle('broken', broken); }
   }
 
   letterbox(on) { document.getElementById('letterbox').classList.toggle('on', !!on); }

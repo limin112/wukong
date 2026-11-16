@@ -75,7 +75,7 @@ export function createParticles({ ground, masks, noise, quality = 'high', densit
         p = lo + mod(p - lo, uBox);
         vec4 g = texture2D(vGlowMap, (p.xz - vMaskRect.xy) * vMaskRect.zw);
         float warm = (g.r + g.g * vSeamGlow) * exp(-max(p.y, 0.0) * 0.12);
-        vCol = vec3(0.075, 0.07, 0.066) + vGlowCol * warm * 0.16;
+        vCol = vec3(0.26, 0.225, 0.2) + vGlowCol * warm * 0.16;
         vSpin = 0.3 + 0.7 * abs(sin(t * (1.2 + aSeed.w * 2.5) + aSeed.z * 9.0));
         vec4 mv = viewMatrix * vec4(p, 1.0);
         float size = 0.022 + aSeed.w * 0.035;
@@ -475,7 +475,7 @@ export function createParticles({ ground, masks, noise, quality = 'high', densit
     for (let i = 0; i < n; i++) {
       puff(x + r.range(-0.6, 0.6) * k, y + 0.3, z + r.range(-0.6, 0.6) * k, {
         vx: r.range(-1, 1), vy: r.range(0.4, 1.2), vz: r.range(-1, 1), acc: -0.08, life: r.range(2.5, 4.5),
-        s0: 0.8 * k, s1: r.range(2.5, 4.5) * k, col: [0.05, 0.043, 0.038], alpha: 0.4,
+        s0: 0.8 * k, s1: r.range(2.5, 4.5) * k, col: [0.21, 0.175, 0.15], alpha: 0.34,
       });
     }
   }
@@ -485,7 +485,7 @@ export function createParticles({ ground, masks, noise, quality = 'high', densit
     for (let i = 0; i < n; i++) {
       const st = rockState[rNext];
       rNext = (rNext + 1) % NR;
-      const fromWall = r() < 0.65;
+      const fromWall = k < 0.6 || r() < 0.65;      // a light tremor only shakes stones off the rim; the sky throws them in a real quake
       let x, z, y;
       if (fromWall) {
         const a = r() * Math.PI * 2;
@@ -501,7 +501,7 @@ export function createParticles({ ground, masks, noise, quality = 'high', densit
       st.ax.set(r() - 0.5, r() - 0.5, r() - 0.5).normalize(); st.ang = r() * 6; st.w = r.range(2, 7);
       st.rest = 0; st.bounced = 0;
       if (fromWall && r() < 0.6) {           // dust sliding off the cliff
-        puff(x, y, z, { vx: st.v.x * 0.3, vy: -1.2, vz: st.v.z * 0.3, acc: 0, life: r.range(4, 6), s0: 2, s1: 7, col: [0.045, 0.04, 0.036], alpha: 0.3 });
+        puff(x, y, z, { vx: st.v.x * 0.3, vy: -1.2, vz: st.v.z * 0.3, acc: 0, life: r.range(4, 6), s0: 2, s1: 7, col: [0.19, 0.16, 0.14], alpha: 0.28 });
       }
     }
     ashBoost = Math.min(2, ashBoost + 0.6 * k);

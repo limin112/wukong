@@ -74,7 +74,7 @@ export const BULL = {
   // line toward the player; the ground splits along that line and erupts a moment later
   slam: {
     tellAt: 0.5, holdAt: 1.2, impactAt: 1.7, hits: [[1.58, 1.74, { dmg: 40, kind: 'heavy', blockable: false }]],
-    eruptAt: 2.15, aim: true, track: [0, 1.2],
+    eruptAt: 2.15, restAt: 2.6, aim: true, track: [0, 1.2],
     keys: [
       k(0, SEAT),
       k(1.2, { ease: 'windup', armR: { at: [0.18, 0.86, -0.08], pole: [0.75, 0.1, -0.6] }, armL: { twoHand: true },
@@ -289,6 +289,94 @@ export const BULL = {
     ],
   },
 
+  // ------------------------------------------------------------------------------------------------ the duel
+  // Phase two against the monkey grown to his own scale (法相天地): two blows, each with one answer.
+  // 横扫: the staff drawn back to his right, then level across the monkey's chest. Guard it (or parry it).
+  sweep2: {
+    tellAt: 0.25, hits: [[1.3, 1.84, { dmg: 18, kind: 'heavy', blockable: true }]], aim: true, track: [0, 1.0],
+    keys: [
+      k(0, STAND),
+      k(0.9, { ease: 'windup', hips: [0, -0.06, 0], armR: { at: [0.85, -0.25, -0.3], pole: [0.3, -0.9, -0.3], w: 1 }, blade: [0.75, 0.1, -0.65],
+        spine: [0, 34, 0], head: [4, -22, 0], armL: { at: [-0.4, -0.5, 0.5], pole: [-0.6, -0.4, -0.5], w: 1 } }),
+      k(1.2, { ease: 'linear', spine: [-2, 38, 0] }),
+      k(1.34, { ease: 'in', armR: { at: [0.8, -0.5, 0.3], pole: [0.35, -0.9, 0], w: 1 }, blade: [0.95, -0.2, 0.25], spine: [8, 24, 0] }),
+      k(1.48, { ease: 'linear', armR: { at: [0.25, -0.5, 0.85], pole: [0.35, -0.9, 0], w: 1 }, blade: [0.1, -0.25, 0.96], spine: [14, 0, 0], head: [10, 0, 0] }),
+      k(1.62, { ease: 'linear', armR: { at: [-0.35, -0.45, 0.8], pole: [0.15, -0.9, 0.1], w: 1 }, blade: [-0.8, -0.2, 0.56], spine: [12, -24, 0] }),
+      k(1.8, { ease: 'out', armR: { at: [-0.55, -0.3, 0.45], pole: [0.1, -0.9, 0.2], w: 1 }, blade: [-0.96, -0.05, -0.1], spine: [8, -34, 0], head: [6, 14, 0] }),
+      k(2.5, { ease: 'inOut', armR: { at: [-0.45, -0.4, 0.5], pole: [0.15, -0.9, 0.1], w: 1 }, blade: [-0.9, 0.1, 0.3], spine: [10, -24, 0] }),
+      k(3.3, { ease: 'inOut', ...STAND, hips: [0, 0, 0] }),
+    ],
+  },
+  // 砸棍: both hands take the staff over his head, it hangs there a beat, then comes straight down. Step out from under it.
+  slam2: {
+    tellAt: 0.3, holdAt: 1.1, impactAt: 1.6, hits: [[1.42, 1.66, { dmg: 24, kind: 'heavy', blockable: false }]], aim: true, track: [0, 1.1],
+    keys: [
+      k(0, STAND),
+      k(1.1, { ease: 'windup', armR: { at: [0.18, 0.86, -0.08], pole: [0.75, 0.1, -0.6], w: 1 }, armL: { twoHand: true },
+        blade: [0.0, 0.5, -0.86], spine: [-14, 0, 0], head: [-6, 0, 0], gripL: 1 }),
+      k(1.38, { ease: 'in', armR: { at: [0.1, 0.35, 0.85], pole: [0.75, -0.3, -0.5], w: 1 }, blade: [0.0, 0.72, 0.69], spine: [8, 0, 0], head: [4, 0, 0] }),
+      k(1.6, { ease: 'snap', hips: [0, -0.12, 0.03], armR: { at: [0.08, -0.7, 0.6], pole: [0.7, -0.6, -0.2], w: 1 }, blade: [0.0, -0.7, 0.71], spine: [30, 0, 0], head: [16, 0, 0] }),
+      k(1.9, { ease: 'out', spine: [33, 0, 0] }),
+      k(2.9, { ease: 'linear', spine: [31, 0, 0] }),
+      k(3.8, { ease: 'inOut', ...STAND, armL: STAND.armL, gripL: STAND.gripL, hips: [0, 0, 0] }),
+    ],
+  },
+  // 连扫: the same sweep, and the staff comes straight back the other way. Keep the guard up for both.
+  combo2: {
+    tellAt: 0.25, hits: [[1.3, 1.84, { dmg: 15, kind: 'heavy', blockable: true }], [2.42, 2.92, { dmg: 15, kind: 'heavy', blockable: true }]], aim: true, track: [0, 1.0],
+    keys: [
+      k(0, STAND),
+      k(0.9, { ease: 'windup', hips: [0, -0.06, 0], armR: { at: [0.85, -0.25, -0.3], pole: [0.3, -0.9, -0.3], w: 1 }, blade: [0.75, 0.1, -0.65],
+        spine: [0, 34, 0], head: [4, -22, 0], armL: { at: [-0.4, -0.5, 0.5], pole: [-0.6, -0.4, -0.5], w: 1 } }),
+      k(1.2, { ease: 'linear', spine: [-2, 38, 0] }),
+      k(1.34, { ease: 'in', armR: { at: [0.8, -0.5, 0.3], pole: [0.35, -0.9, 0], w: 1 }, blade: [0.95, -0.2, 0.25], spine: [8, 24, 0] }),
+      k(1.48, { ease: 'linear', armR: { at: [0.25, -0.5, 0.85], pole: [0.35, -0.9, 0], w: 1 }, blade: [0.1, -0.25, 0.96], spine: [14, 0, 0], head: [10, 0, 0] }),
+      k(1.62, { ease: 'linear', armR: { at: [-0.35, -0.45, 0.8], pole: [0.15, -0.9, 0.1], w: 1 }, blade: [-0.8, -0.2, 0.56], spine: [12, -24, 0] }),
+      k(1.8, { ease: 'out', armR: { at: [-0.55, -0.3, 0.45], pole: [0.1, -0.9, 0.2], w: 1 }, blade: [-0.96, -0.05, -0.1], spine: [8, -34, 0], head: [6, 14, 0] }),
+      k(2.3, { ease: 'inOut', armR: { at: [-0.62, -0.22, 0.3], pole: [0.1, -0.9, 0.2], w: 1 }, blade: [-0.9, 0.12, -0.42], spine: [2, -42, 0], head: [4, 22, 0] }),
+      k(2.46, { ease: 'in', armR: { at: [-0.35, -0.45, 0.8], pole: [0.15, -0.9, 0.1], w: 1 }, blade: [-0.8, -0.2, 0.56], spine: [10, -24, 0] }),
+      k(2.6, { ease: 'linear', armR: { at: [0.25, -0.5, 0.85], pole: [0.35, -0.9, 0], w: 1 }, blade: [0.1, -0.25, 0.96], spine: [14, 0, 0], head: [10, 0, 0] }),
+      k(2.74, { ease: 'linear', armR: { at: [0.8, -0.5, 0.3], pole: [0.35, -0.9, 0], w: 1 }, blade: [0.95, -0.2, 0.25], spine: [8, 24, 0] }),
+      k(2.94, { ease: 'out', armR: { at: [0.85, -0.3, -0.2], pole: [0.3, -0.9, -0.3], w: 1 }, blade: [0.8, 0.0, -0.6], spine: [4, 36, 0], head: [4, -16, 0] }),
+      k(3.7, { ease: 'inOut', armR: { at: [0.7, -0.4, 0.1], pole: [0.4, -0.9, -0.2], w: 1 }, blade: [0.7, 0.2, -0.2], spine: [8, 24, 0] }),
+      k(4.5, { ease: 'inOut', ...STAND, hips: [0, 0, 0] }),
+    ],
+  },
+  // 冲撞: the bull he is. He bows until the horns point at the monkey, paws the ground, and runs him down in a
+  // straight line (bull.js moves him from runAt to runEnd), then skids to a stop with his back half turned.
+  charge: {
+    tellAt: 0.2, runAt: 1.55, runEnd: 2.85,
+    keys: [
+      k(0, STAND),
+      k(1.0, { ease: 'windup', hips: [0, -0.2, -0.1], hipsTurn: [26, 0, 0], spine: [36, 0, 0], head: [22, 0, 0],
+        armL: { at: [-0.55, -0.55, -0.3], pole: [-0.7, -0.2, -0.6], w: 1 }, armR: { at: [0.6, -0.5, -0.35], pole: [0.7, -0.3, -0.6], w: 1 }, blade: [0.25, 0.25, -0.93] }),
+      k(1.55, { ease: 'linear', hips: [0, -0.24, -0.12], spine: [40, 0, 0], head: [26, 0, 0] }),
+      k(2.85, { ease: 'linear', hips: [0, -0.22, 0.02], spine: [42, 0, 0], head: [24, 0, 0] }),
+      k(3.25, { ease: 'out', hips: [0, -0.3, -0.12], hipsTurn: [10, 0, 0], spine: [20, -14, 0], head: [10, 0, 0],
+        armL: { at: [-0.6, -0.4, 0.4], pole: [-0.7, -0.3, -0.5], w: 1 }, armR: { at: [0.5, -0.6, 0.3], pole: [0.7, -0.3, -0.5], w: 1 }, blade: [0.2, 0.7, 0.68] }),
+      k(4.0, { ease: 'linear', hips: [0, -0.26, -0.1], spine: [22, -12, 0] }),
+      k(4.9, { ease: 'inOut', ...STAND, hips: [0, 0, 0], hipsTurn: [0, 0, 0] }),
+    ],
+  },
+
+  // the cinematic's sweep (山崩): he drops into a crouch and takes the staff across the floor itself, where a monkey
+  // of a man's height stands (contactAt: the staff points straight ahead)
+  sweepLow: {
+    tellAt: 0.3, contactAt: 1.62, aim: true, track: [0, 1.2],
+    keys: [
+      k(0, STAND),
+      k(1.0, { ease: 'windup', hips: [0, -0.3, -0.04], hipsTurn: [16, 0, 0], spine: [26, 36, 0], head: [10, -26, 0],
+        armR: { at: [0.8, -0.6, -0.25], pole: [0.3, -0.9, -0.3], w: 1 }, blade: [0.72, -0.2, -0.66], armL: { at: [-0.5, -0.5, 0.4], pole: [-0.6, -0.4, -0.5], w: 1 } }),
+      k(1.3, { ease: 'linear', spine: [26, 40, 0] }),
+      k(1.46, { ease: 'in', armR: { at: [0.78, -0.8, 0.3], pole: [0.35, -0.9, 0], w: 1 }, blade: [0.9, -0.4, 0.2], spine: [34, 24, 0] }),
+      k(1.62, { ease: 'linear', armR: { at: [0.25, -0.85, 0.75], pole: [0.35, -0.9, 0], w: 1 }, blade: [0.1, -0.42, 0.9], spine: [40, 0, 0], head: [14, 0, 0] }),
+      k(1.78, { ease: 'linear', armR: { at: [-0.35, -0.8, 0.7], pole: [0.15, -0.9, 0.1], w: 1 }, blade: [-0.76, -0.4, 0.5], spine: [36, -24, 0] }),
+      k(1.98, { ease: 'out', armR: { at: [-0.55, -0.6, 0.4], pole: [0.1, -0.9, 0.2], w: 1 }, blade: [-0.93, -0.2, -0.1], spine: [26, -36, 0], head: [8, 16, 0] }),
+      k(2.8, { ease: 'inOut', spine: [20, -28, 0] }),
+      k(3.8, { ease: 'inOut', ...STAND, hips: [0, 0, 0], hipsTurn: [0, 0, 0] }),
+    ],
+  },
+
   flinch2: {
     blendIn: 0.05,
     keys: [
@@ -298,19 +386,47 @@ export const BULL = {
     ],
   },
 
-  // both knees broken: he drops onto his knees, catches himself on his hands and bows until his head is in reach
+  // 僵直: a heavy blow that lands while he is not swinging rocks him for a moment
+  hit2: {
+    blendIn: 0.04,
+    keys: [
+      k(0, STAND),
+      k(0.14, { ease: 'out', spine: [-12, 10, 6], head: [-18, 10, 0], hips: [0, -0.04, -0.06], armL: { at: [-0.6, -0.5, 0.1], pole: [-0.6, -0.3, -0.7], w: 1 } }),
+      k(0.5, { ease: 'inOut', spine: [2, 4, 2], head: [-4, 4, 0] }),
+      k(0.8, { ease: 'inOut', ...STAND, hips: [0, 0, 0] }),
+    ],
+  },
+  // 架势崩: his posture breaks. He reels back, sags over the staff with his head hanging, and stays there - the opening
+  reel: {
+    blendIn: 0.05, openAt: 0.5, openEnd: 2.9, moveRoot: [[0.0, 0.7, -0.3, 'out']],
+    keys: [
+      k(0, STAND),
+      k(0.28, { ease: 'out', spine: [-24, 12, 8], head: [-28, 12, 0], hips: [0, -0.06, -0.1],
+        armL: { at: [-0.85, -0.05, 0.1], pole: [-0.6, -0.3, -0.7], w: 1 }, armR: { at: [0.8, -0.3, -0.15], pole: [0.6, -0.3, -0.7], w: 1 }, blade: [0.5, 0.6, -0.6] }),
+      k(1.0, { ease: 'inOut', hips: [0, -0.4, 0.02], hipsTurn: [12, 0, 0], spine: [34, -8, 0], head: [28, 0, 0],
+        armL: { at: [-0.35, -0.8, 0.45], pole: [-0.7, -0.3, -0.5], w: 1 }, armR: { at: [0.35, -0.4, 0.6], pole: [0.7, -0.5, -0.3], w: 1 }, blade: [0.02, 0.98, 0.15] }),
+      k(1.9, { ease: 'inOut', spine: [38, -4, 0], head: [32, 6, 0], hips: [0, -0.43, 0.02] }),
+      k(2.7, { ease: 'inOut', spine: [34, -6, 0], head: [26, -4, 0], hips: [0, -0.4, 0.02] }),
+      k(3.5, { ease: 'inOut', ...STAND, hips: [0, 0, 0], hipsTurn: [0, 0, 0] }),
+    ],
+  },
+
+  // both knees broken: he drops onto his knees, then pitches forward onto his forearms until his chin is on the
+  // ground, the face still turned at the monkey — the ring through his nose hangs within reach, in front of him
   kneel: {
-    impactAt: 1.6, openAt: 2.4, openEnd: 7.4, blendIn: 0.05,
+    impactAt: 2.3, openAt: 2.5, openEnd: 7.4, blendIn: 0.05,
     keys: [
       k(0, STAND),
       k(0.7, { ease: 'in', hips: [0, -0.36, -0.02], spine: [16, 0, 0], head: [14, 0, 0],
         legL: { at: [-0.08, -0.62, 0.2], pole: [0, -0.2, 1] }, legR: { at: [0.08, -0.62, 0.2], pole: [0, -0.2, 1] } }),
-      k(1.6, { ease: 'in', hips: [0, -0.74, -0.18], hipsTurn: [10, 0, 0], spine: [24, 0, 0], head: [16, 0, 0],
+      k(1.5, { ease: 'in', hips: [0, -0.74, -0.18], hipsTurn: [10, 0, 0], spine: [20, 0, 0], head: [10, 0, 0],
         legL: { at: [-0.1, -0.3, -0.56], pole: [0, -0.4, 1] }, legR: { at: [0.1, -0.3, -0.56], pole: [0, -0.4, 1] },
-        armL: { at: [-0.4, -0.8, 0.4], pole: [-0.7, 0.2, -0.5], w: 1 }, armR: { at: [0.4, -0.8, 0.4], pole: [0.7, 0.2, -0.5], w: 1 } }),
-      k(2.4, { ease: 'inOut', hipsTurn: [42, 0, 0], spine: [52, 0, 0], head: [38, 0, 0],
-        armL: { at: [-0.42, -0.62, 0.62], pole: [-0.7, 0.3, -0.5], w: 1 }, armR: { at: [0.42, -0.62, 0.62], pole: [0.7, 0.3, -0.5], w: 1 } }),
-      k(7.4, { ease: 'linear', spine: [53, 0, 2], head: [36, 0, 0] }),
+        armL: { at: [-0.4, -0.5, 0.6], pole: [-0.7, 0.2, -0.5], w: 1 }, armR: { at: [0.4, -0.5, 0.6], pole: [0.7, 0.2, -0.5], w: 1 } }),
+      k(2.3, { ease: 'in', hips: [0, -0.74, -0.3], hipsTurn: [80, 0, 0], spine: [28, 0, 0], head: [-62, 0, 0],
+        armL: { at: [-0.38, -0.78, 0.45], pole: [-0.7, 0.3, -0.6], hand: [-0.1, -0.2, 1], w: 1 }, gripL: 0,
+        armR: { at: [0.38, -0.78, 0.45], pole: [0.7, 0.3, -0.6], w: 1 } }),
+      k(2.6, { ease: 'out', spine: [31, 0, 0], head: [-58, 0, 0] }),
+      k(7.4, { ease: 'linear', spine: [30, 0, 2], head: [-60, 0, 0] }),
       k(8.6, { ease: 'inOut', hips: [0, -0.36, -0.02], hipsTurn: [0, 0, 0], spine: [16, 0, 0], head: [10, 0, 0],
         legL: { at: [-0.08, -0.62, 0.2], pole: [0, -0.2, 1] }, legR: { at: [0.08, -0.62, 0.2], pole: [0, -0.2, 1] }, ...STAND, armL: STAND.armL }),
       k(9.6, { ease: 'inOut', ...STAND, hips: [0, 0, 0], legL: { at: [-0.016, -0.99, -0.04], pole: [0, 0, 1], w: 0 }, legR: { at: [0.016, -0.99, -0.04], pole: [0, 0, 1], w: 0 } }),
@@ -336,6 +452,9 @@ export const BULL = {
 // phase-one moves start and end in the seat; this list is what the AI may pick from while seated
 export const SEATED_ATTACKS = ['sweep', 'slam', 'palmL', 'palmR', 'breath', 'grab'];
 export const STANDING_ATTACKS = ['stompL', 'stompR', 'horn', 'meteor', 'throw'];
+// 锤地: the overhead slam taken into the air (bull.js lifts and carries him); where it lands the ground burns
+BULL.quake = { ...BULL.slam2, tellAt: 0.2, hits: [[1.42, 1.66, { dmg: 26, kind: 'heavy', blockable: false }]] };
+export const DUEL_ATTACKS = ['sweep2', 'slam2', 'combo2', 'stompL', 'stompR', 'meteor', 'charge', 'quake'];
 
 export function buildBullTracks(lib = BULL) {
   for (const [name, mv] of Object.entries(lib)) if (mv && mv.keys) mv.track_ = new PoseTrack(mv.keys, { name });

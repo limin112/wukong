@@ -11,7 +11,7 @@
 import * as THREE from 'three';
 import { makeNoiseTexture } from '../arena/textures.js';
 import {
-  SEAT, SPAWN, BOUNDS, CAM_BOUNDS, ALTAR, MASK, LAVA_Y, RIVERS, buildMasks, buildGround, sampleField, propColliders,
+  SEAT, SPAWN, BOUNDS, DUEL_BOUNDS, DUEL_SCALE, CAM_BOUNDS, ALTAR, MASK, LAVA_Y, RIVERS, buildMasks, buildGround, sampleField, propColliders,
 } from './arena/layout.js';
 import {
   makeCrackTexture, makeBasaltTexture, makeAshTexture, makeRuneTexture, makeFriezeTexture, fieldTexture,
@@ -19,7 +19,7 @@ import {
 } from './arena/textures.js';
 import { VOLCANO } from './arena/shared.js';
 import { createTerrain, createLavaFalls } from './arena/terrain.js';
-import { createSky, mainVolcanoDir } from './arena/sky.js';
+import { createSky, mainVolcanoDir, sunDir, SUN } from './arena/sky.js';
 import { buildVolcanoEnvMaps } from './arena/envmap.js';
 import { createProps } from './arena/props.js';
 import { createParticles } from './arena/particles.js';
@@ -32,45 +32,49 @@ const QUALITY = {
   low: { grid: 161, shadow: 1024, particles: 0.45, haze: false },
 };
 const TAU = 1.1;          // s, phase parameter smoothing
+const SUN_LIGHT_EL = 0.5;    // rad: the key comes in steeper than the disc stands (SUN.el) ...
+const SUN_LIGHT_AZ = SUN.az - 0.22;   // ... and a little more from the side, so the giant's shadow falls beside the fight, not on it
 const COLLAPSE_T = 7.5;   // s, the floor gives way (phase two)
 
 // Per-phase targets. Colours are linear RGB.
+// sun*: the low sun behind his right shoulder (the shadow-casting key); fill*: cool sky light from the camera's side;
+// key*: the lava's warm underlight; back*: the main volcano's glow (the eruption's rim).
 const PHASES = [
-  { // 0 entry: the hush before he wakes; the lava is tired and dim
+  { // 0 entry: a burning dusk, the hush before he wakes; the lava is tired
     heat: 0.62, seamHeat: 1.4, veins: 0.5, flow: 0.28, riverLight: 0.75, fallLight: 0.5, fissure: 0.05,
-    skyGlow: 0.55, erupt: 0, rain: 0, wet: 0,
-    skyI: 1.15, skyCol: [0.52, 0.56, 0.66], keyI: 0.7, keyCol: [1.0, 0.5, 0.27], backI: 0.45, backCol: [1.0, 0.36, 0.14],
-    hemiI: 1.0, hemiSky: [0.1, 0.085, 0.08], hemiGround: [0.1, 0.04, 0.02],
-    fog: [0.014, 0.0115, 0.0105], fogDensity: 0.0125, fogFall: 0.045, fogGlow: [0.065, 0.014, 0.004], sunGlow: [0.045, 0.011, 0.004],
-    ash: 0.9, embers: 0.45, smoke: 0.5, steam: 0, rainFx: 0, lavaLights: 0.8, env: 0.55, haze: 0.8,
-    exposure: 1.0, warm: 0.2, gfog: 0.12, desat: 0.18, bloom: 0.55,
+    skyGlow: 0.55, erupt: 0, rain: 0, wet: 0, sunK: 1.0,
+    sunI: 4.6, sunCol: [1.0, 0.54, 0.25], fillI: 0.75, fillCol: [0.5, 0.62, 0.9], keyI: 0.5, keyCol: [1.0, 0.5, 0.27], backI: 0.25, backCol: [1.0, 0.36, 0.14],
+    hemiI: 0.85, hemiSky: [0.32, 0.35, 0.46], hemiGround: [0.3, 0.14, 0.07],
+    fog: [0.15, 0.085, 0.06], fogDensity: 0.007, fogFall: 0.045, fogGlow: [0.22, 0.05, 0.014], sunGlow: [0.36, 0.16, 0.05],
+    ash: 0.9, embers: 0.45, smoke: 0.5, steam: 0, rainFx: 0, lavaLights: 0.8, env: 0.85, haze: 0.8,
+    exposure: 0.98, warm: 0.1, gfog: 0.1, desat: 0.04, bloom: 0.5,
   },
-  { // 1 fight: the same place, a little more alive
+  { // 1 fight: the same dusk, a little more alive
     heat: 0.75, seamHeat: 1.4, veins: 0.62, flow: 0.35, riverLight: 0.9, fallLight: 0.6, fissure: 0.08,
-    skyGlow: 0.68, erupt: 0, rain: 0, wet: 0,
-    skyI: 1.2, skyCol: [0.52, 0.56, 0.66], keyI: 0.8, keyCol: [1.0, 0.5, 0.27], backI: 0.5, backCol: [1.0, 0.36, 0.14],
-    hemiI: 1.05, hemiSky: [0.105, 0.088, 0.082], hemiGround: [0.11, 0.045, 0.02],
-    fog: [0.015, 0.012, 0.011], fogDensity: 0.012, fogFall: 0.045, fogGlow: [0.08, 0.017, 0.005], sunGlow: [0.055, 0.013, 0.004],
-    ash: 1.0, embers: 0.7, smoke: 0.6, steam: 0, rainFx: 0, lavaLights: 1.0, env: 0.6, haze: 1.0,
-    exposure: 1.04, warm: 0.24, gfog: 0.1, desat: 0.14, bloom: 0.6,
+    skyGlow: 0.7, erupt: 0, rain: 0, wet: 0, sunK: 1.0,
+    sunI: 5.0, sunCol: [1.0, 0.54, 0.25], fillI: 0.8, fillCol: [0.5, 0.62, 0.9], keyI: 0.55, keyCol: [1.0, 0.5, 0.27], backI: 0.3, backCol: [1.0, 0.36, 0.14],
+    hemiI: 0.85, hemiSky: [0.33, 0.36, 0.47], hemiGround: [0.32, 0.15, 0.07],
+    fog: [0.16, 0.088, 0.06], fogDensity: 0.007, fogFall: 0.045, fogGlow: [0.26, 0.06, 0.016], sunGlow: [0.4, 0.17, 0.055],
+    ash: 1.0, embers: 0.7, smoke: 0.6, steam: 0, rainFx: 0, lavaLights: 1.0, env: 0.9, haze: 1.0,
+    exposure: 1.02, warm: 0.12, gfog: 0.1, desat: 0.02, bloom: 0.5,
   },
-  { // 2 the mountain splits: the brightest moment of the film; the floor breaks into plates on a lava lake
+  { // 2 the mountain splits: the sun reddens behind the ash, the land itself lights the sky; the floor breaks into plates
     heat: 1.15, seamHeat: 1.6, veins: 0.9, flow: 0.5, riverLight: 1.5, fallLight: 1.4, fissure: 1.0,
-    skyGlow: 1.6, erupt: 1.0, rain: 0, wet: 0,
-    skyI: 0.8, skyCol: [0.55, 0.56, 0.68], keyI: 1.6, keyCol: [1.0, 0.48, 0.2], backI: 1.9, backCol: [1.0, 0.38, 0.12],
-    hemiI: 1.2, hemiSky: [0.24, 0.08, 0.045], hemiGround: [0.3, 0.08, 0.02],
-    fog: [0.034, 0.0145, 0.009], fogDensity: 0.0115, fogFall: 0.04, fogGlow: [0.22, 0.05, 0.012], sunGlow: [0.22, 0.05, 0.012],
-    ash: 1.2, embers: 1.5, smoke: 1.0, steam: 0.1, rainFx: 0, lavaLights: 1.6, env: 0.8, haze: 1.3,
-    exposure: 1.06, warm: 0.45, gfog: 0.12, desat: 0.06, bloom: 0.8,
+    skyGlow: 1.6, erupt: 1.0, rain: 0, wet: 0, sunK: 1.0,
+    sunI: 3.6, sunCol: [1.0, 0.42, 0.17], fillI: 0.45, fillCol: [0.62, 0.55, 0.7], keyI: 1.5, keyCol: [1.0, 0.48, 0.2], backI: 2.0, backCol: [1.0, 0.38, 0.12],
+    hemiI: 0.9, hemiSky: [0.4, 0.2, 0.16], hemiGround: [0.5, 0.15, 0.05],
+    fog: [0.17, 0.062, 0.034], fogDensity: 0.008, fogFall: 0.04, fogGlow: [0.36, 0.08, 0.02], sunGlow: [0.4, 0.12, 0.035],
+    ash: 1.2, embers: 1.5, smoke: 1.0, steam: 0.1, rainFx: 0, lavaLights: 1.6, env: 1.0, haze: 1.3,
+    exposure: 1.02, warm: 0.26, gfog: 0.12, desat: 0.0, bloom: 0.66,
   },
-  { // 3 rain: the first rain in a thousand years washes everything grey-black; steam rises from the lava
+  { // 3 rain: the first rain in a thousand years; slate and silver, the fire dies, steam rises — cold, never black
     heat: 0.2, seamHeat: 0.25, veins: 0.06, flow: 0.08, riverLight: 0.22, fallLight: 0.12, fissure: 0.1,
-    skyGlow: 0.1, erupt: 0, rain: 1, wet: 1,
-    skyI: 1.15, skyCol: [0.6, 0.65, 0.74], keyI: 0.12, keyCol: [0.9, 0.5, 0.3], backI: 0.08, backCol: [0.9, 0.5, 0.3],
-    hemiI: 1.2, hemiSky: [0.13, 0.14, 0.155], hemiGround: [0.035, 0.032, 0.03],
-    fog: [0.03, 0.032, 0.035], fogDensity: 0.016, fogFall: 0.035, fogGlow: [0.02, 0.006, 0.002], sunGlow: [0.0, 0.0, 0.0],
-    ash: 0.0, embers: 0.05, smoke: 0.0, steam: 1.0, rainFx: 1, lavaLights: 0.25, env: 0.6, haze: 0.15,
-    exposure: 0.92, warm: -0.35, gfog: 0.5, desat: 0.45, bloom: 0.4,
+    skyGlow: 0.1, erupt: 0, rain: 1, wet: 1, sunK: 1.0,
+    sunI: 0.9, sunCol: [0.78, 0.84, 0.95], fillI: 0.7, fillCol: [0.6, 0.68, 0.8], keyI: 0.1, keyCol: [0.9, 0.5, 0.3], backI: 0.06, backCol: [0.9, 0.5, 0.3],
+    hemiI: 1.15, hemiSky: [0.42, 0.47, 0.55], hemiGround: [0.13, 0.13, 0.14],
+    fog: [0.2, 0.22, 0.25], fogDensity: 0.014, fogFall: 0.035, fogGlow: [0.03, 0.01, 0.004], sunGlow: [0.3, 0.3, 0.3],
+    ash: 0.0, embers: 0.05, smoke: 0.0, steam: 1.0, rainFx: 1, lavaLights: 0.25, env: 0.9, haze: 0.15,
+    exposure: 1.0, warm: -0.22, gfog: 0.3, desat: 0.3, bloom: 0.38,
   },
 ];
 
@@ -133,25 +137,36 @@ export async function createVolcanoArena({ scene, renderer, quality = 'high', te
   if (haze) group.add(haze.mesh);
 
   // --- lights ------------------------------------------------------------------------------------------------------
-  // cool light from the smoke-veiled sky, high behind the giant's left shoulder: his rim, the shadows
-  const skyLight = new THREE.DirectionalLight(0x8ea0d0, 0.6);
-  skyLight.name = 'volcano-sky-light';
-  const lightDir = new THREE.Vector3(0.42, -0.78, 0.46).normalize();     // direction the light travels
+  // the sun: low behind his right shoulder, where the sky dome draws it. The light comes in a little steeper than the
+  // disc stands (a cinematographer's cheat: shorter shadows, light on the floor) — his rim, the long shadows
+  const sunTo = sunDir(new THREE.Vector3());
+  const lightDir = new THREE.Vector3(Math.sin(SUN_LIGHT_AZ) * Math.cos(SUN_LIGHT_EL), Math.sin(SUN_LIGHT_EL), -Math.cos(SUN_LIGHT_AZ) * Math.cos(SUN_LIGHT_EL)).negate();   // travel
+  const sunLight = new THREE.DirectionalLight(0xffa050, 3.0);
+  sunLight.name = 'volcano-sun';
   const center = new THREE.Vector3(0, 0, -4);
-  skyLight.position.copy(center).addScaledVector(lightDir, -140);
-  skyLight.target.position.copy(center);
-  skyLight.castShadow = true;
-  skyLight.shadow.mapSize.set(Q.shadow, Q.shadow);
+  sunLight.position.copy(center).addScaledVector(lightDir, -150);
+  sunLight.target.position.copy(center);
+  sunLight.castShadow = true;
+  sunLight.shadow.mapSize.set(Q.shadow, Q.shadow);
   {
-    const sc = skyLight.shadow.camera;
-    sc.left = -54; sc.right = 54; sc.top = 56; sc.bottom = -56;
-    sc.near = 60; sc.far = 230;
+    const sc = sunLight.shadow.camera;
+    sc.left = -58; sc.right = 58; sc.top = 50; sc.bottom = -50;
+    sc.near = 40; sc.far = 270;
     sc.updateProjectionMatrix();
   }
-  skyLight.shadow.bias = -0.0004;
-  skyLight.shadow.normalBias = 0.06;
-  skyLight.shadow.radius = 2.5;
-  group.add(skyLight, skyLight.target);
+  sunLight.shadow.bias = -0.0005;
+  sunLight.shadow.normalBias = 0.08;
+  sunLight.shadow.radius = 3;
+  group.add(sunLight, sunLight.target);
+  const skyLight = sunLight;      // (exported as keyLight)
+
+  // cool fill from the open sky on the camera's side, high over the spawn (no shadows): the giant's front, the
+  // monkey's back — the complement of the sun
+  const fillLight = new THREE.DirectionalLight(0x8ea0d0, 0.6);
+  fillLight.name = 'volcano-sky-fill';
+  fillLight.position.set(46, 80, 110).add(center);
+  fillLight.target.position.copy(center);
+  group.add(fillLight, fillLight.target);
 
   // warm back light from the main volcano's glow (no shadows): rim on everything facing the seat
   const backLight = new THREE.DirectionalLight(0xff6a30, 0.4);
@@ -210,10 +225,10 @@ export async function createVolcanoArena({ scene, renderer, quality = 'high', te
   const fog = new THREE.FogExp2(0x050302, 0.012);
   scene.fog = fog;
   scene.background = new THREE.Color(0x020101);
-  const envMaps = buildVolcanoEnvMaps(renderer);
+  const envMaps = buildVolcanoEnvMaps(renderer, noise);
   scene.environment = envMaps.ember;
   let envKey = 'ember';
-  VOLCANO.vSunDir.value.copy(volcDir);
+  VOLCANO.vSunDir.value.copy(sunTo);
 
   // --- colliders ---------------------------------------------------------------------------------------------------
   const allColliders = propColliders().concat(props.colliders || []);
@@ -228,6 +243,17 @@ export async function createVolcanoArena({ scene, renderer, quality = 'high', te
   const colliderSrc = allColliders.slice();
   let sunkState = -1;
   for (const s of props.sinkers || []) sinkers.push(s);
+  // 山崩: when the floor gives way everything that stood on it goes down with it (pillars, steles, the ding, the bones):
+  // the giants' duel is fought on an open lake - nothing is left standing for two forty-metre bodies to wade through
+  {
+    const own = new Set(sinkers.map((k) => k.object));
+    for (const obj of props.group.children) {
+      if (own.has(obj)) continue;
+      const y0 = obj.position.y;
+      sinkers.push({ object: obj, apply(collapse) { obj.position.y = y0 - collapse * collapse * 30; obj.visible = collapse < 0.995; } });
+    }
+    for (const c of allColliders) c.sinks = true;
+  }
 
   // --- state -------------------------------------------------------------------------------------------------------
   let phase = 0;
@@ -278,28 +304,45 @@ export async function createVolcanoArena({ scene, renderer, quality = 'high', te
     }
   }
 
+  // 法相天地: the duel is fought in the same caldera drawn DUEL_SCALE times wider (the floor, the walls and the falls
+  // are stretched in plan; heights stay), so two forty-metre bodies have room to run. ks is the scale now in force.
+  let ks = 1;
+  function setDuelScale(on) {
+    const k = on ? DUEL_SCALE : 1;
+    if (k === ks) return;
+    ks = k;
+    for (const o of [terrain.mesh, falls.group, props.group]) { o.scale.set(k, 1, k); o.updateMatrixWorld(true); }
+    VOLCANO.vMaskRect.value.set(MASK.x0 * k, MASK.z0 * k, 1 / (MASK.size * k), 1 / (MASK.size * k));       // the lava map follows the floor (its fine textures keep their world size)
+    const sc = sunLight.shadow.camera, w = on ? 58 * k * 1.15 : 58, h = on ? 50 * k * 1.25 : 50;
+    sc.left = -w; sc.right = w; sc.top = h; sc.bottom = -h; sc.far = on ? 270 + 300 * k : 270;
+    sunLight.position.copy(sunLight.target.position).addScaledVector(lightDir, on ? -150 - 60 * k : -150);
+    sc.updateProjectionMatrix();
+  }
   function groundY(x, z) {
+    if (ks !== 1) { x /= ks; z /= ks; }
     if (Math.abs(x - ALTAR.x) <= ALTAR.hx && Math.abs(z - ALTAR.z) <= ALTAR.hz) return ALTAR.top;
     return ground.heightAt(x, z, collapse);
   }
 
-  function lavaAt(x, z) {
+  /** c: how far the floor has given way (default: now); pass 1 to ask what will be lava once it has. */
+  function lavaAt(x, z, c = collapse) {
+    if (ks !== 1) { x /= ks; z /= ks; }
     if (x < MASK.x0 || z < MASK.z0 || x > MASK.x0 + MASK.size || z > MASK.z0 + MASK.size) return 0;
     const r = sampleField(masks.mask, masks.res, x, z, 0);
-    const g = collapse > 0 ? sampleField(masks.mask, masks.res, x, z, 1) * collapse : 0;
+    const g = c > 0 ? sampleField(masks.mask, masks.res, x, z, 1) * c : 0;
     return Math.max(r, g) * danger;
   }
 
-  /** Nearest safe point (lavaAt < 0.2) to (x, z), searching outwards; handy after the collapse. */
-  function safeSpot(x, z, maxR = 30) {
-    if (lavaAt(x, z) < 0.2) return { x, z };
+  /** Nearest safe point (lavaAt < 0.2) to (x, z), searching outwards; handy after the collapse (c = 1: before it, for after). */
+  function safeSpot(x, z, maxR = 30, c = collapse) {
+    if (lavaAt(x, z, c) < 0.2) return { x, z };
     for (let r = 1; r <= maxR; r += 1) {
       const n = Math.max(8, Math.round(r * 6));
       for (let i = 0; i < n; i++) {
         const a = (i / n) * Math.PI * 2;
         const px = x + Math.cos(a) * r, pz = z + Math.sin(a) * r;
         if (px < BOUNDS.minX || px > BOUNDS.maxX || pz < BOUNDS.minZ || pz > BOUNDS.maxZ) continue;
-        if (lavaAt(px, pz) < 0.2 && !colliders.some((c) => Math.hypot(px - c.x, pz - c.z) < c.r + 0.5)) return { x: px, z: pz };
+        if (lavaAt(px, pz, c) < 0.2 && !colliders.some((k) => Math.hypot(px - k.x, pz - k.z) < k.r + 0.5)) return { x: px, z: pz };
       }
     }
     return { x: SPAWN.x, z: SPAWN.z };
@@ -367,8 +410,10 @@ export async function createVolcanoArena({ scene, renderer, quality = 'high', te
     tu.uRain.value = cur.rainFx;
     falls.update(time, { heat: cur.heat * 1.15, reveal2 });
     // lights
-    skyLight.intensity = cur.skyI;
-    skyLight.color.setRGB(...cur.skyCol);
+    sunLight.intensity = cur.sunI;
+    sunLight.color.setRGB(...cur.sunCol);
+    fillLight.intensity = cur.fillI;
+    fillLight.color.setRGB(...cur.fillCol);
     backLight.intensity = cur.backI * (1 + fl * 0.8);
     backLight.color.setRGB(...cur.backCol);
     lavaKey.intensity = cur.keyI * (1 + fl * 0.6);
@@ -388,7 +433,7 @@ export async function createVolcanoArena({ scene, renderer, quality = 'high', te
     }
     // atmosphere
     if (scene.fog === fog) {
-      fog.color.setRGB(...cur.fog).multiplyScalar(1.6);
+      fog.color.setRGB(...cur.fog);
       fog.density = cur.fogDensity * 0.85;
     }
     if (scene.background && scene.background.isColor && scene.background !== prev.bg) scene.background.setRGB(...cur.fog);
@@ -396,7 +441,7 @@ export async function createVolcanoArena({ scene, renderer, quality = 'high', te
     if (wantEnv !== envKey && scene.environment === envMaps[envKey]) scene.environment = envMaps[wantEnv];
     envKey = wantEnv;
     if (Object.values(envMaps).includes(scene.environment)) scene.environmentIntensity = cur.env;
-    sky.update(time, { glow: cur.skyGlow * (1 + fl * 0.3), erupt: cur.erupt, rain: cur.rain, flash: fl * 0.5, fogCol: tmpC.setRGB(...cur.fog) });
+    sky.update(time, { sun: cur.sunK, glow: cur.skyGlow * (1 + fl * 0.3), erupt: cur.erupt, rain: cur.rain, flash: fl * 0.5, fogCol: tmpC.setRGB(...cur.fog) });
     // grade hints (one object, mutated)
     gradeHints.exposure = cur.exposure + fl * 0.06;
     gradeHints.warm = cur.warm + fl * 0.15;
@@ -442,6 +487,9 @@ export async function createVolcanoArena({ scene, renderer, quality = 'high', te
 
   return {
     bounds: { ...BOUNDS },
+    duelBounds: { minX: DUEL_BOUNDS.minX * DUEL_SCALE, maxX: DUEL_BOUNDS.maxX * DUEL_SCALE, minZ: DUEL_BOUNDS.minZ * DUEL_SCALE, maxZ: DUEL_BOUNDS.maxZ * DUEL_SCALE },       // the giants' duel: the whole (widened) pit
+    setDuelScale,
+    get duelScale() { return ks; },
     playerSpawn: { ...SPAWN },
     bullSeat: { ...SEAT, y: ALTAR.top },
     groundY,

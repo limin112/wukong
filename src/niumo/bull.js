@@ -28,12 +28,30 @@ const UP = new THREE.Vector3(0, 1, 0);
 const SFX_KNOWN = await import('../audio.js').then(m => new Set(m.SFX_NAMES || [])).catch(() => null);
 
 export const BULL_TUNING = {
-  height: 40, maxHp: 2400, poiseMax: 320, poiseRegen: 30,
-  weakHp: 170, kneeHp2: 210, regrow: 26,
+  height: 40, maxHp: 1800, poiseMax: 320, poiseRegen: 30,
+  weakHp: 170, kneeHp2: 200, regrow: 24,
+  // the seated phase is a prologue: this many blows of the staff (or health down to preludeHp) and he stands up
+  preludeHits: 6, preludeHp: 0.9, openingRest: 6.5, openingDelay: 0.7,
   bodyMul: 0.3, weakMul: 1.0, brokenMul: 1.15, headMul: 1.5, heavyWeakMul: 1.6, exposedMul: 1.5,
   staffLength: 30, staffGrip: 0.15, staffRadius: 0.78,
   reflectDmg: 150, grabDmg: 42, fireDmg: 30, firePatchDmg: 7, eruptDmg: 26, waveDmg: 30, meteorDmg: 28,
   turn2: 22, walk2: 3.0,
+  // the duel (phase two against the monkey at his own scale): every blow of the rod counts this much, his poise is
+  // short, he turns and walks faster and keeps the monkey at the staff's length
+  duelMul: 2.3, duelHead: 1.3, duelPoise: 135, duelTurn: 70, duelWalk: 16, duelReach: 27,
+  // ... a heavy blow that finds him not swinging rocks him (僵直, at most once every flinchCd seconds); a broken
+  // posture (架势崩) leaves him sagging and taking reelMul; below enrageAt of his health he calls the fire down (火雨)
+  // and from then on fights faster, with the charge
+  flinchCd: 3.2, reelMul: 1.4, enrageAt: 0.5, duelMeteorDmg: 15, duelWaveDmg: 17, duelCrushDmg: 22, chargeDmg: 26, chargeSpeed: 60,
+  // ... and how hard he presses: seconds between blows (calm / enraged), and how often a sweep runs straight on into the slam
+  duelRest: [1.0, 1.9], rageRest: [0.45, 1.1], chainP: 0.25, rageChainP: 0.45,
+  // 现真身 (under enrageAt): he wears the fire - blows count armorMul (his defence up by half) until the banana-leaf fan
+  // blows it out for armorDown s (a parry, for armorParry s). 锤地: the leap leaves quakeR m of burning ground for
+  // quakeLife s, which costs fieldDmg every fieldTick s to stand in
+  armorMul: 1 / 1.5, armorDown: 9, armorParry: 4, quakeR: 30, quakeLife: 9, fieldDmg: 12, fieldTick: 0.5, quakeJump: 0.3,
+  press: 0.15, wade: 1.1,        // hooves: pressed this far into rock / sunk this far into the lava lake (m)
+  hoofPitch: 16,                 // standing: the hoof's point lies this many degrees below its ankle
+  groundIn: [5.4, 6.8],          // rise: the feet take his weight over this stretch of the move (s)
   seatHipsUp: 0.12,              // seated: hips this many leg lengths above the seat
   eye: [0.4, 0.2, 0.16, 0.08],   // eye glow: forward, up, sideways, size (head sizes)
 };
@@ -52,6 +70,7 @@ const BK_VERT = /* glsl */`
 
 const BK_PARS = /* glsl */`
 uniform float bkTime;
+uniform float bkNearK;
 uniform vec4 bkA;   // ember veins, lava texels, lava under-light, ash
 uniform vec4 bkB;   // rim, bind units -> meters, ground y, albedo gain
 uniform vec4 bkC;   // unused, unused, cooling (death), unused
@@ -115,10 +134,12 @@ const BK_EMIT = /* glsl */`
       float t = clamp( dot( vBkBind - wa.xyz, ab ) / max( dot( ab, ab ), 1e-8 ), 0.0, 1.0 );
       float d = length( vBkBind - ( wa.xyz + ab * t ) ) / max( wa.w, 1e-6 );
       if ( d >= 1.0 ) continue;
-      float m = 1.0 - smoothstep( 0.4, 1.0, d );
+      // a wound, not a decal: fine cracks, dense at the heart of it, thinning out and breaking up toward the rim
+      float m = 1.0 - smoothstep( 0.2, 1.0, d ); m *= m;
       float dmg = wc.x, broken = wc.y, flash = wc.z;
-      float edge = bkCells( pm * ( 1.15 + dmg * 0.6 ) + float( i ) * 7.3 );
-      float crack = 1.0 - smoothstep( 0.0, 0.05 + 0.12 * dmg, edge );
+      float edge = bkCells( pm * ( 1.75 + dmg * 0.5 ) + float( i ) * 7.3 );
+      float crack = 1.0 - smoothstep( 0.0, 0.03 + 0.1 * dmg, edge );
+      crack *= mix( 1.0, smoothstep( 0.3, 0.62, bkNoise( pm * 0.8 + float( i ) * 3.1 ) ), smoothstep( 0.15, 0.7, d ) * ( 1.0 - dmg ) );
       float pulse = 0.82 + 0.18 * sin( bkTime * ( 2.4 + dmg * 3.0 ) + float( i ) * 1.7 );
       vec3 col = mix( bkLavaCol, vec3( 1.0, 0.5, 0.14 ), clamp( dmg * 0.7 + flash * 0.6, 0.0, 1.0 ) );
       float core = broken * ( 1.0 - smoothstep( 0.0, 0.6, d ) );
@@ -183,6 +204,7 @@ function injectAfter(src, include, code) {
 export function applyBullLook(char, { bindToMeters = char.scale } = {}) {
   const u = {
     bkTime: { value: 0 },
+    bkNearK: { value: 1 },        // near-lens dither on (1) / off (0: the close shots of the cinematics)
     bkA: { value: new THREE.Vector4(0.55, 0.75, 0.4, 0.6) },     // ember veins, lava texels, under-light, ash
     bkB: { value: new THREE.Vector4(0.14, bindToMeters, 0, 0.62) },     // rim, bind units -> meters, ground y, albedo gain
     bkC: { value: new THREE.Vector4(0, 0, 0, 0) },                     // .z: cooling (death)
@@ -209,7 +231,7 @@ export function applyBullLook(char, { bindToMeters = char.scale } = {}) {
       f = f.replace('void main() {', BK_PARS + '\nvoid main() {');
       // a giant's limb right in front of the lens dithers away instead of swallowing the frame (or the camera)
       f = injectAfter(f, 'clipping_planes_fragment', `{
-        float bkNear = smoothstep( 2.5, 6.0, distance( vBkWorld, cameraPosition ) );
+        float bkNear = max( 1.0 - bkNearK, smoothstep( 2.5, 6.0, distance( vBkWorld, cameraPosition ) ) );
         if ( bkNear < 0.999 ) {
           vec2 q = mod( floor( gl_FragCoord.xy ), 4.0 );
           float th = ( mod( q.x * 4.0 + q.y * 9.0 + q.x * q.y * 3.0, 16.0 ) + 0.5 ) / 16.0;
@@ -358,13 +380,16 @@ export async function loadBullCharacter({ base = 'assets/models/', height = BULL
 
 const C = {
   lava: new THREE.Color(1.0, 0.36, 0.07), ember: new THREE.Color(1.0, 0.5, 0.16), hot: new THREE.Color(1.15, 0.72, 0.32),
-  deep: new THREE.Color(0.7, 0.12, 0.02), smoke: new THREE.Color(0.075, 0.066, 0.06), ash: new THREE.Color(0.13, 0.118, 0.108),
-  stone: new THREE.Color(0.13, 0.118, 0.11), fire: new THREE.Color(1.0, 0.42, 0.1), fireCore: new THREE.Color(1.1, 0.68, 0.26),
-  // the dust a blow throws up: dark ash, the low part lit by the lava (particles are unlit: these are their final colours)
-  dust: new THREE.Color(0.075, 0.064, 0.058), dustLit: new THREE.Color(0.15, 0.075, 0.045),
+  deep: new THREE.Color(0.7, 0.12, 0.02), smoke: new THREE.Color(0.16, 0.135, 0.12), ash: new THREE.Color(0.3, 0.26, 0.225),
+  stone: new THREE.Color(0.2, 0.175, 0.155), fire: new THREE.Color(1.0, 0.42, 0.1), fireCore: new THREE.Color(1.1, 0.68, 0.26),
+  // the dust a blow throws up: warm ash in the evening light, some of it catching the sun (particles are unlit: these are their final colours)
+  dust: new THREE.Color(0.25, 0.21, 0.18), dustLit: new THREE.Color(0.42, 0.27, 0.17),
 };
 
 /** Effects at the bull's scale, on the shared FX particle pools. */
+const STAFF_CIRCLES = 16;
+const ARMOR_BONES = ['Spine2', 'LeftArm', 'RightArm', 'LeftForeArm', 'RightForeArm', 'Head', 'Hips', 'LeftUpLeg', 'RightUpLeg', 'Spine'];
+
 class BullFX {
   constructor(fx) { this.fx = fx; }
   get add() { return this.fx.add; }
@@ -436,6 +461,20 @@ class BullFX {
     this.alpha.emit(p, _w.set(0, 0.5, 0), C.dust, { size: heavy ? 2.2 : 1.4, life: 0.8, grav: 0.1, alpha: 0.35, grow: 1.5 });
     this.fx.light(p, 0xffb070, heavy ? 30 : 16, 0.12, 8);
   }
+  /** A blow between giants: sparks and slag you can see from the far wall, a white flash at the point of contact. */
+  giantHit(p, dir, heavy) {
+    for (let i = 0; i < (heavy ? 46 : 24); i++) {
+      const v = _w.set(rand(-1, 1), rand(-0.3, 1.3), rand(-1, 1)).normalize().multiplyScalar(rand(22, 70)).addScaledVector(dir, rand(10, 34));
+      this.add.emit(p, v, Math.random() < 0.4 ? C.hot : C.lava, { size: rand(0.6, 1.7), life: rand(0.35, 0.9), drag: 1.3, grav: -42, alpha: 1 });
+    }
+    for (let i = 0; i < (heavy ? 16 : 7); i++) {
+      const v = _w.set(rand(-1, 1), rand(0, 1.2), rand(-1, 1)).normalize().multiplyScalar(rand(14, 40)).addScaledVector(dir, rand(8, 24));
+      this.alpha.emit(p, v, Math.random() < 0.6 ? C.stone : C.ash, { size: rand(0.7, 1.9), life: rand(0.7, 1.4), drag: 0.8, grav: -38, alpha: 0.95 });
+    }
+    this.add.emit(p, _w.set(0, 0, 0), C.hot, { size: heavy ? 11 : 7, life: 0.07, grav: 0, alpha: 0.9 });
+    this.alpha.emit(p, _w.set(dir.x * 6, 3, dir.z * 6), C.dust, { size: heavy ? 22 : 13, life: 1.1, grav: 0.1, alpha: 0.3, grow: 1.6 });
+    this.fx.light(p, 0xffa050, heavy ? 900 : 500, 0.2, 90);
+  }
   /** A blow into a lava crack: hot spatter. */
   lavaHit(p, dir, heavy) {
     for (let i = 0; i < (heavy ? 40 : 24); i++) {
@@ -500,13 +539,16 @@ const MARK_FS = {
       float k = (1.0 - uFade) * (0.85 + 0.15 * sin(uTime * 12.0)) * edge(vUv);
       gl_FragColor = vec4(EMBER * (rim * (0.25 + 0.75 * uT) + cr * (0.25 + 0.9 * uT)) * k, (inside * reveal * 0.32 + rim * 0.15) * k); }`,
   // burning ground left by the breath
-  fire: /* glsl */`uniform float uT; uniform float uTime; uniform float uFade; varying vec2 vUv;
+  fire: /* glsl */`uniform float uT; uniform float uTime; uniform float uFade; uniform float uBig; varying vec2 vUv;
     ${MARK_COMMON}
     void main(){ vec2 c = vUv - 0.5; float d = length(c) * 2.0;
       float body = 1.0 - smoothstep(0.3, 0.85, d + 0.22 * (mkN(vUv * 6.0 + uTime * 0.6) - 0.5));
       float flame = mkN(vUv * 9.0 + vec2(0.0, -uTime * 2.2)) * mkN(vUv * 4.0 - uTime * 0.7);
       float k = body * (1.0 - uFade) * edge(vUv);
-      gl_FragColor = vec4(vec3(1.0, 0.31, 0.06) * (0.18 + 1.2 * flame) * k, k * 0.5); }`,
+      // (uBig: 锤地's field on a floor that is already lava - white-hot, with a hard bright edge, so it reads at a glance)
+      float ring = smoothstep(0.66, 0.74, d) * (1.0 - smoothstep(0.76, 0.84, d)) * (1.0 - uFade) * uBig;
+      vec3 col = mix(vec3(1.0, 0.31, 0.06) * (0.18 + 1.2 * flame), vec3(1.25, 0.62, 0.16) * (0.3 + 1.0 * flame), uBig);
+      gl_FragColor = vec4(col * k + vec3(1.3, 0.5, 0.1) * ring, min(1.0, k * (0.5 + 0.25 * uBig) + ring * 0.7)); }`,
 };
 const PREMULT = { blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor, blendEquation: THREE.AddEquation };
 
@@ -743,6 +785,37 @@ export class BullKing {
       const drop = (hipsY - BULL_TUNING.seatHipsUp * this.legLen) / this.legLen;
       if (drop > SEAT.hips[1] * -1) SEAT.hips[1] = -drop;        // shared by every seated pose (SEAT, SEAT_SLEEP, holdPose)
     }
+    // the hooves: the skin that belongs to the toe bone (the hoof proper, not the robe or the hair that the foot also
+    // carries), kept in its bone's frame — what he actually stands on — and the hoof's point, in the foot bone's frame
+    this.soles = { Left: [], Right: [] }; this.hoofTip = {};
+    {
+      const geo = mesh.geometry, P = geo.attributes.position, SI = geo.attributes.skinIndex, SW = geo.attributes.skinWeight;
+      const sk = mesh.skeleton, bn = sk.bones.map(b => b.name.replace(/^mixamorig:?/, ''));
+      const cand = { Left: [], Right: [] }, p = new THREE.Vector3();
+      for (let v = 0; v < P.count; v++) {
+        let best = 0;
+        for (let k = 1; k < 4; k++) if (SW.getComponent(v, k) > SW.getComponent(v, best)) best = k;
+        if (SW.getComponent(v, best) < 0.55) continue;
+        const bi = SI.getComponent(v, best), m = /^(Left|Right)(ToeBase|Toe_End)$/.exec(bn[bi]);
+        if (!m) continue;
+        p.fromBufferAttribute(P, v).applyMatrix4(mesh.bindMatrix);
+        const toe = bind[m[1] + 'ToeBase'], foot = bind[m[1] + 'Foot'];
+        if (p.distanceTo(toe) > foot.distanceTo(toe) * 2.2) continue;         // (a stray strand of cloth)
+        cand[m[1]].push({ p: p.clone(), bi });
+      }
+      for (const s of ['Left', 'Right']) {
+        const list = cand[s], foot = bind[s + 'Foot'], fi = sk.bones.indexOf(B[s + 'Foot']);
+        if (!list.length || fi < 0) continue;
+        const step = Math.max(1, Math.floor(list.length / 90));
+        for (let i = 0; i < list.length; i += step) {
+          const c = list[i];
+          this.soles[s].push({ bone: sk.bones[c.bi], local: c.p.clone().applyMatrix4(sk.boneInverses[c.bi]) });
+        }
+        let tip = list[0];
+        for (const c of list) if (c.p.distanceToSquared(foot) > tip.p.distanceToSquared(foot)) tip = c;
+        this.hoofTip[s] = tip.p.clone().applyMatrix4(sk.boneInverses[fi]);
+      }
+    }
     this.knee = {};
     const toBind = this.char.model.getWorldQuaternion(new THREE.Quaternion()).invert();
     const Fb = F.clone().applyQuaternion(toBind).normalize();
@@ -751,7 +824,7 @@ export class BullKing {
       const fwd = Fb.clone().multiplyScalar(0.05 * this.legLen / this.bindToMeters);
       // phase one: the kneecap; phase two: the crack runs from the knee down the shin to the ankle
       this.knee[s] = { a1: k.clone().lerp(t, 0.08).add(fwd), b1: k.clone().lerp(f, 0.12).add(fwd), r1: (0.14 * this.legLen) / this.bindToMeters,
-        a2: k.clone().add(fwd), b2: k.clone().lerp(f, 0.9).add(fwd), r2: (0.12 * this.legLen) / this.bindToMeters };
+        a2: k.clone().lerp(f, 0.5).add(fwd), b2: f.clone().lerp(bind[s + 'ToeBase'] || f, 0.75), r2: (0.15 * this.legLen) / this.bindToMeters };
     }
   }
 
@@ -780,12 +853,13 @@ export class BullKing {
     this.seat = { x: seat.x, z: seat.z, yaw: seat.yaw ?? 0, y: gy };
     this.pos.set(seat.x, gy, seat.z); this.yaw = this.seat.yaw;
     this.hp = this.maxHp; this.phase = 1; this.dead = false; this.state = 'dormant'; this.invulnerable = true;
-    this.poise = 0; this.poiseT = 0; this.cooldown = 2; this.cds = { sweep: 0, slam: 0, palm: 0, breath: 6, grab: 4, stomp: 0, horn: 0, meteor: 8, throw: 12 };
+    this.poise = 0; this.poiseT = 0; this.cooldown = 2; this.cds = { sweep: 0, slam: 0, palm: 0, breath: 6, grab: 4, stomp: 0, horn: 0, quake: 5, meteor: 8, throw: 12 };
     this.lastAttack = ''; this.atk = null; this.frontT = 0; this.brokenCount = 0; this.downT = 0; this.critTaken = false;
     this.timeline = []; this.deathT = 0; this.sink = 0; this.aimYaw = 0; this.aimWant = 0; this.mirror = false;
     this.lookYaw = 0; this.lookPitch = 0; this.wakeK = 0; this.eyes = 0; this.eyesWant = 0; this.autoAttack = true;
     this.hasStaff = true; this.staffMode = 'hand'; this.staffBlend = 1; this.a.sword = this.staff; this.staff.visible = true;
     this.ik = { Left: null, Right: null }; this.carry = null; this.critYank = 0; this.thrown = null;
+    this.lift = 0; this.liftW = 0; this.preludeHits = 0; this.openingT = -1; this.duel = false; this.enraged = false; this.flinchT = 0; this.reeling = false; this.chain = null; this.chainQ = []; this.armor = false; this.armorDownT = 0; this.jumpY = 0;
     for (const p of PARTS) this.resetWeak(p, 1);
     for (const h of this.hazards) h.remove?.(); this.hazards = [];
     for (const m of this.marks) m.remove(); this.marks = [];
@@ -810,10 +884,31 @@ export class BullKing {
   }
 
   /** The wake cutscene ends: eyes open, the fight begins. */
-  wake() {
+  wake({ opening = true } = {}) {
     if (this.dead) return;
     this.state = 'idle'; this.invulnerable = false; this.eyesWant = 1; this.cooldown = 2.2;
     this.say('bull_roar', { volume: 0.7, pitch: 0.8 }, 'boss_death');
+    // seated, his first move is always the opening blow (unless the cinematic has already played it)
+    if (opening && this.phase === 1 && this.T.openingRest > 0) this.openingT = this.T.openingDelay;
+  }
+
+  /**
+   * The opening blow of the fight (also the last beat of the opening cinematic): seated, he brings the staff down at
+   * `target` (a ground point; default: the player, else straight ahead), and then leaves it lying where it fell with
+   * both hands on it for `rest` seconds — the first thing the monkey gets to hit. Works from the dormant state (it
+   * wakes him: eyes open, he can be hurt). Timeline from the call, in seconds: 0.5 the staff is overhead (ground line
+   * shows), ~2.0 it lands (OPENING_SLAM.impact), ~2.45 the ground erupts along the line, ~2.9 the staff lies still
+   * (OPENING_SLAM.rest) and stays for `rest` s, then 1.2 s back into the seat. Returns false when it cannot start.
+   */
+  openingSlam({ target = null, rest = this.T.openingRest, hold = 0.3 } = {}) {
+    if (this.dead || this.phase !== 1 || this.state === 'transition') return false;
+    this.cancelAttack();
+    this.invulnerable = false; this.eyesWant = 1; this.openingT = -1; this.wakeK = Math.max(this.wakeK, 0.6);
+    const p = this.player && !this.player.dead && !this.player.ghost ? this.player.pos : null;
+    const at = (target || p || this.pos.clone().addScaledVector(this.fwd(_v), this.legLen * 1.6)).clone();
+    this.startAttack('slam', { pos: at });
+    this.atk.holdFor = hold; this.atk.restFor = rest; this.atk.opening = true; this.atk.aimAt = at;
+    return true;
   }
 
   hurtZones() { return this.zones; }
@@ -844,12 +939,14 @@ export class BullKing {
     const at = this.atk;
     if (this.state === 'attack' && at) {
       const n = at.name;
-      if (n === 'sweep' || n === 'slam') { t.part = 'staff'; t.pos.copy(this.staffButt).lerp(this.staffTip, 0.55); t.big = true; t.radius = 26; }
+      if (n === 'slam' && at.resting) { t.part = 'staff'; t.pos.copy(this.locks[6].pos); t.radius = 8; }      // the staff lies still: frame where the monkey hits it
+      else if (n === 'sweep' || n === 'slam') { t.part = 'staff'; t.pos.copy(this.staffButt).lerp(this.staffTip, 0.55); t.big = true; t.radius = 26; }
       else if (n === 'palmL' || n === 'palmR' || n === 'grab' || n === 'grabSlam') { t.part = n === 'palmR' ? 'handR' : 'handL'; this.bonePos(n === 'palmR' ? 'RightHand' : 'LeftHand', t.pos); t.radius = 10; }
       else if (n === 'breath') { t.part = 'head'; if (at.fireTarget) t.pos.copy(at.fireTarget); t.big = true; t.radius = 30; }
       else if (n === 'stompL' || n === 'stompR') { t.part = n === 'stompL' ? 'kneeL' : 'kneeR'; this.bonePos(n === 'stompL' ? 'LeftFoot' : 'RightFoot', t.pos); t.big = true; t.radius = 30; }
       else if (n === 'horn') { t.part = 'head'; this.bonePos('Head', t.pos); t.big = true; t.radius = 22; }
       else if (n === 'meteor') { t.part = 'sky'; t.pos.set(this.pos.x, 20, this.pos.z).addScaledVector(this.fwd(_v), 25); t.big = true; t.radius = 40; }
+      else if (n === 'combo2' || n === 'charge') { t.big = true; }
       else if (n === 'throw') { t.part = 'staff'; t.pos.copy(at.target || this.staffTip); t.big = true; t.radius = 24; }
     } else if (this.state === 'down') { t.part = 'head'; this.bonePos('Head', t.pos); t.radius = 10; }
     return t;
@@ -887,7 +984,8 @@ export class BullKing {
   }
   playerCapsule(player) {
     const c = this._pcap || (this._pcap = { a: new THREE.Vector3(), b: new THREE.Vector3(), r: 0.45 });
-    c.a.set(player.pos.x, player.pos.y + 0.35, player.pos.z); c.b.set(player.pos.x, player.pos.y + 1.25, player.pos.z);
+    const S = player.S || 1;        // (法相天地: a monkey of his own scale)
+    c.a.set(player.pos.x, player.pos.y + 0.35 * S, player.pos.z); c.b.set(player.pos.x, player.pos.y + 1.25 * S, player.pos.z); c.r = 0.45 * S;
     return c;
   }
   /** True when an arena collider stands between (x0, z0) and (x1, z1) on the ground. */
@@ -913,7 +1011,7 @@ export class BullKing {
 
   // --------------------------------------------------------------------------------------------- damage
 
-  takeHit({ dmg = 0, poise = 0, point, dir, heavy = false, from, part } = {}) {
+  takeHit({ dmg = 0, poise = 0, point, dir, heavy = false, from, part, fan = false } = {}) {
     if (this.dead) return;
     point = point || this.bonePos('Spine2');
     dir = dir || new THREE.Vector3(0, 0, -1);
@@ -925,7 +1023,8 @@ export class BullKing {
       return;
     }
     let mul = this.T.bodyMul, lava = false;
-    if (w && w.active) {
+    if (this.duel) { mul = this.T.duelMul * (part === 'head' ? this.T.duelHead : 1) * (this.reeling ? this.T.reelMul : 1); lava = true; if (this.armored) mul *= this.T.armorMul; }      // giant against giant: every blow tells (less through the fire he wears)
+    else if (w && w.active) {
       lava = true;
       if (!w.broken) {
         const k = (heavy ? this.T.heavyWeakMul : 1) * (w.exposedT > 0 ? this.T.exposedMul : 1);
@@ -934,21 +1033,92 @@ export class BullKing {
         if (w.hp <= 0) this.breakWeak(part, point);
       } else mul = this.T.brokenMul;
     } else if (part === 'head') { mul = this.state === 'down' ? this.T.headMul : this.T.bodyMul * 2; lava = this.state === 'down'; }
-    const total = dmg * mul;
+    let total = dmg * mul;
+    if (this.phase === 1) {
+      // the prologue: every blow of the staff counts toward getting him on his feet; his health barely moves
+      if (!fan && this.state !== 'transition') this.preludeHits++;
+      total = Math.min(total, Math.max(0, this.hp - this.maxHp * (this.T.preludeHp - 0.02)));
+    }
     this.hp -= total;
-    this.events.push({ type: 'damage', amount: total, part, weak: !!(w && w.active) });
-    if (lava) { this.bfx.lavaHit(point, dir, heavy); this.say(heavy ? 'staff_hit_heavy' : 'staff_hit', { pos: point }, heavy ? 'hit_heavy' : 'hit_flesh'); }
-    else { this.bfx.stoneHit(point, dir, heavy); this.say(heavy ? 'staff_hit_heavy' : 'staff_hit', { pos: point, pitch: 0.8 }, 'block'); }
+    const armored = this.armored;
+    this.events.push({ type: 'damage', amount: total, part, weak: !!(w && w.active), armored, prelude: this.phase === 1 ? this.preludeHits : undefined });
+    if (armored) this.bfx.stoneHit(point, dir, heavy);
+    if (this.duel) {
+      // at the giants' scale: a blow you can see from across the caldera, and feel in him
+      this.bfx.giantHit(point, dir, heavy);
+      if (heavy) { this.fx.shockwave(point, 15, 0.4, new THREE.Color(1.0, 0.6, 0.25)); this.say('bull_slam', { pos: point, volume: 0.5, pitch: 1.5 }, 'boss_step'); }
+      const push = heavy ? 1.6 : 0.5;
+      if (from) { const ax = this.pos.x - from.x, az = this.pos.z - from.z, al = Math.hypot(ax, az) || 1; this.pos.x += ax / al * push; this.pos.z += az / al * push; this.keepIn(); }
+    }
+    if (lava) { if (!this.duel) this.bfx.lavaHit(point, dir, heavy); this.say(heavy ? 'staff_hit_heavy' : 'staff_hit', { pos: point }, heavy ? 'hit_heavy' : 'hit_flesh'); }
+    else { this.bfx.stoneHit(point, dir, heavy); this.say(heavy ? 'staff_hit_heavy' : 'staff_hit', { pos: point, pitch: part === 'staff' ? 1.25 : 0.8 }, 'block'); }
+    if (part === 'staff') this.staffGlow = Math.max(this.staffGlow || 0, heavy ? 1 : 0.6);
     this.fx.flashMesh(this.char.model, new THREE.Color(1, 0.4, 0.15), heavy ? 0.14 : 0.08, lava ? (heavy ? 0.1 : 0.05) : 0.025);
     const away = from ? new THREE.Vector3(this.pos.x - from.x, 0, this.pos.z - from.z) : dir.clone();
-    this.a.jolt(away, lava ? (heavy ? 0.035 : 0.02) : 0.008, heavy ? 0.0016 : 0.001);
+    this.a.jolt(away, this.duel ? (heavy ? 0.075 : 0.04) : lava ? (heavy ? 0.035 : 0.02) : 0.008, this.duel ? (heavy ? 0.004 : 0.002) : heavy ? 0.0016 : 0.001);
     this.cam?.addTrauma(heavy ? 0.22 : 0.1);
     if (heavy) this.cam?.zoomPunch?.(1.5);
-    if (this.state !== 'down' && this.state !== 'transition') {
-      this.poise += poise * (lava ? 1.4 : 0.6); this.poiseT = 3;
-      if (this.poise >= this.T.poiseMax) this.stagger();
+    if (this.state !== 'down' && this.state !== 'transition' && this.state !== 'stagger') {
+      this.poise += poise * (armored ? 0.5 : lava ? 1.4 : 0.6); this.poiseT = 3;
+      if (this.poise >= (this.duel ? this.T.duelPoise : this.T.poiseMax)) this.stagger();
+      else if (this.duel && heavy && this.hp > 0 && !armored) this.flinch();
     }
     this.checkThresholds();
+  }
+
+  /** 现真身: is the fire he wears up? (It is down for a while after the fan or a parry, and while his posture is broken.) */
+  get armored() { return !!(this.duel && this.armor && this.armorDownT <= 0 && !this.reeling && !this.dead); }
+  /** Blow the fire off him for `sec` seconds. Returns true when it was up. */
+  breakArmor(sec = this.T.armorDown) {
+    if (!this.duel || !this.armor || this.dead) return false;
+    const was = this.armorDownT <= 0;
+    this.armorDownT = Math.max(this.armorDownT, sec);
+    if (!was) return false;
+    const c = this.bonePos('Spine2');
+    this.bfx.smoke(c, 26, { size: [10, 22], spread: 12, rise: 9, life: [1.6, 3.2], alpha: 0.4, color: C.ash });
+    this.fx.shockwave(c, 34, 0.6, new THREE.Color(0.75, 0.8, 0.85));
+    this.say('rock_crack', { pitch: 0.6, volume: 1 }, 'wax_crack');
+    this.flinchT = 0; this.flinch();
+    this.events.push({ type: 'armorBreak', sec });
+    return true;
+  }
+  /** The duel's walls (wider than the prologue's: giants use the whole pit). */
+  get bnd() { return (this.duel && this.arena?.duelBounds) || this.arena?.bounds; }
+
+  /** Rocked or reeling: the monkey's blows bite a little longer. */
+  get staggered() { return this.state === 'stagger'; }
+  /** His posture, 0..1 (the duel's second bar): full = it breaks. */
+  get posture() { return this.reeling ? 1 : clamp(this.poise / (this.duel ? this.T.duelPoise : this.T.poiseMax), 0, 1); }
+
+  /** Keep him inside the caldera (pushed by blows, carried by his own charge). Returns true when a wall stopped him. */
+  keepIn(margin = 14) {
+    const b = this.bnd;
+    if (!b) return false;
+    const x = clamp(this.pos.x, b.minX + margin, b.maxX - margin), z = clamp(this.pos.z, b.minZ + margin, b.maxZ - margin);
+    const hit = x !== this.pos.x || z !== this.pos.z;
+    this.pos.x = x; this.pos.z = z;
+    return hit;
+  }
+
+  /**
+   * 僵直 (the duel): a heavy blow rocks him - when he stands idle, is still gathering a blow (before its tell is over) or
+   * is recovering from one. A swing already on its way is not stopped (he has that much armour). Rate-limited.
+   */
+  flinch() {
+    if (this.dead || this.flinchT > 0 || this.state === 'down' || this.state === 'transition' || this.state === 'stagger') return false;
+    if (this.state === 'attack') {
+      const at = this.atk, mv = this.a.move, def = at && at.def;
+      if (!at || !mv) return false;
+      const t = mv.t, last = def.hits ? def.hits[def.hits.length - 1][1] : def.impactAt ?? def.runEnd ?? (def.rain ? def.rain[1] : 0);
+      const first = def.hits ? def.hits[0][0] : def.impactAt ?? def.runAt ?? (def.rain ? def.rain[0] : 0);
+      if (at.name === 'meteor' ? t < first : !(t < first * 0.45 || t > last + 0.15)) return false;
+    }
+    this.cancelAttack();
+    this.state = 'stagger'; this.reeling = false; this.flinchT = this.T.flinchCd;
+    this.playMove('hit2');
+    this.say('bull_roar', { pitch: 1.25, volume: 0.45 }, 'stagger');
+    this.events.push({ type: 'flinch' });
+    return true;
   }
 
   partAt(p) {
@@ -962,7 +1132,7 @@ export class BullKing {
 
   checkThresholds() {
     if (this.hp <= 0) { this.die(); return true; }
-    if (this.phase === 1 && this.state !== 'transition' && this.hp <= this.maxHp * 0.5 && this.state !== 'down') { this.startTransition(); return true; }
+    if (this.phase === 1 && this.state !== 'transition' && (this.preludeHits >= this.T.preludeHits || this.hp <= this.maxHp * this.T.preludeHp)) { this.startTransition(); return true; }
     return false;
   }
 
@@ -983,7 +1153,6 @@ export class BullKing {
       const side = part === 'handL' ? 'palmL' : 'palmR';
       if ((at.name === side || (at.name === 'grab' && part === 'handL')) && this.a.move.def.restEnd && this.a.move.t < this.a.move.def.restEnd) this.a.move.t = this.a.move.def.restEnd;
     }
-    if (this.phase === 1 && this.brokenCount >= 2 && this.state !== 'transition') this.goDown();
     if (this.phase === 2 && this.weak.kneeL.broken && this.weak.kneeR.broken && this.state !== 'down') this.goDown();
   }
 
@@ -1034,19 +1203,23 @@ export class BullKing {
     this.poise += 90; this.poiseT = 3;
     this.a.jolt(new THREE.Vector3(this.pos.x - from.x, 0, this.pos.z - from.z), 0.03, 0.001);
     this.cam?.addTrauma(0.2);
-    if (this.atk && this.a.move && this.atk.name === 'sweep') this.a.move.speed = 0.45;       // the staff rebounds, the swing dies
-    if (this.poise >= this.T.poiseMax) this.stagger();
+    if (this.atk) this.atk.parried = true;
+    this.chainQ.length = 0;
+    this.breakArmor(this.T.armorParry);
+    if (this.atk && this.a.move && (this.atk.name === 'sweep' || this.atk.name === 'sweep2' || this.atk.name === 'combo2')) this.a.move.speed = 0.45;       // the staff rebounds, the swing dies
+    if (this.poise >= (this.duel ? this.T.duelPoise : this.T.poiseMax)) this.stagger();
   }
 
   stagger() {
     if (this.dead || this.state === 'down' || this.state === 'transition') return;
     this.cancelAttack();
     this.poise = 0;
-    this.state = 'stagger';
-    this.playMove(this.phase === 1 ? 'flinch' : 'flinch2');
-    this.say('bull_roar', { pitch: 1.1, volume: 0.6 }, 'stagger');
-    this.events.push({ type: 'stagger' });
-    this.cam?.addTrauma(0.25);
+    this.state = 'stagger'; this.reeling = this.duel;
+    this.playMove(this.phase === 1 ? 'flinch' : this.duel ? 'reel' : 'flinch2');
+    this.say('bull_roar', { pitch: this.duel ? 0.8 : 1.1, volume: this.duel ? 1 : 0.6 }, 'stagger');
+    this.events.push({ type: 'stagger', reel: this.duel });
+    this.cam?.addTrauma(this.duel ? 0.5 : 0.25);
+    if (this.duel) { this.flinchT = this.T.flinchCd; this.say('rock_crack', { pitch: 0.7 }, 'wax_crack'); this.bfx.giantHit(this.bonePos('Spine2'), this.fwd(new THREE.Vector3()), true); }
   }
 
   /**
@@ -1055,7 +1228,7 @@ export class BullKing {
    * Returns { reflected, extinguished, exposed: [parts] }.
    */
   fanned({ from, dir, range = 14, angle = 0.6 } = {}) {
-    const out = { reflected: false, extinguished: 0, exposed: [] };
+    const out = { reflected: false, extinguished: 0, exposed: [], armor: false };
     if (!from || !dir || this.dead) return out;
     const d = new THREE.Vector3(dir.x, 0, dir.z).normalize();
     const inCone = (x, z, extra = 0) => {
@@ -1063,6 +1236,7 @@ export class BullKing {
       if (L > range + extra) return false;
       return L < 1e-3 || (dx * d.x + dz * d.z) / L > Math.cos(angle);
     };
+    if (inCone(this.pos.x, this.pos.z, 12) && this.breakArmor()) out.armor = true;
     for (const f of this.groundFires) if (!f.out && inCone(f.x, f.z, f.r)) { f.out = true; f.t = Math.max(f.t, f.life - 0.6); out.extinguished++; this.bfx.smoke(new THREE.Vector3(f.x, 0.5, f.z), 3, { size: [2, 4], rise: 3, alpha: 0.25, color: C.ash }); }
     const at = this.atk;
     if (at && at.name === 'breath' && at.breathing && !at.reflected) {
@@ -1195,7 +1369,7 @@ export class BullKing {
       if (this.carry) this.releaseCarry(false);
     }
     this.ik.Left = this.ik.Right = null;
-    this.atk = null; this.mirror = false;
+    this.atk = null; this.mirror = false; this.jumpY = 0;
     this.weak.handL.resting = this.weak.handR.resting = false;
     this.mouthGlow.material.opacity = 0;
     if (this.staffMode === 'planted') this.regripStaff();
@@ -1209,12 +1383,22 @@ export class BullKing {
     const cd = this.cds, w = [];
     if (this.phase === 1) {
       const reach = this.legLen * 0.95;     // what his hands can reach on the ground in front of him
-      if (this.frontT > 3 && cd.grab <= 0 && aa < 0.6 && d < reach * 1.25) return 'grab';
+      // the prologue: only the staff and the palms (each leaves something lying on the ground to hit); the fire
+      // breath and the grab stay in the library (forceAttack) but he no longer picks them
       if (d < reach * 1.15 && aa < 1.25 && cd.palm <= 0) w.push([ang < -0.1 ? 'palmL' : ang > 0.1 ? 'palmR' : (Math.random() < 0.65 ? 'palmL' : 'palmR'), 4]);
-      if (cd.sweep <= 0 && aa < 1.6) w.push(['sweep', d > 12 ? 3 : 2]);
+      if (cd.sweep <= 0 && aa < 1.6) w.push(['sweep', d > 12 ? 2.5 : 1.5]);
       if (cd.slam <= 0 && aa < 1.0 && d > 9) w.push(['slam', d > 18 ? 3.5 : 2]);
-      if (cd.breath <= 0 && d > 12) w.push(['breath', d > 24 ? 4 : 1.5]);
-      if (cd.grab <= 0 && aa < 0.5 && d < reach * 1.2) w.push(['grab', 1]);
+    } else if (this.duel) {
+      // the duel: staff work up close, the ground and the sky when the monkey keeps away; after the rage, the charge
+      const rage = this.enraged;
+      if (cd.sweep <= 0 && aa < 1.3 && d < 44) { w.push(['sweep2', rage ? 1.6 : 3]); w.push(['combo2', rage ? 2.6 : 1.4]); }
+      if (cd.slam <= 0 && aa < 0.9 && d < 40) w.push(['slam2', 2.4]);
+      if (cd.stomp <= 0) w.push([ang > 0 ? 'stompR' : 'stompL', d < 30 ? 2 : 1.2]);
+      if (rage && cd.meteor <= 0) w.push(['meteor', d > 40 ? 3 : 1.6]);
+      if (cd.horn <= 0 && aa < 0.7 && d > (rage ? 28 : 40)) w.push(['charge', d > 46 ? 5 : rage ? 2.6 : 1.6]);
+      // 连击 then 锤地: two blows (four once he has changed) and the leap; or the leap alone, to close on a monkey who keeps away
+      if (cd.quake <= 0 && aa < 1.3 && d < 50) w.push(['pattern', rage ? 3.4 : 2.2]);
+      if (cd.quake <= 0 && d > 30) w.push(['quake', 2]);
     } else {
       if (cd.stomp <= 0 && d < 34) w.push([ang > 0 ? 'stompR' : 'stompL', d < 16 ? 4 : 2.5]);
       if (cd.horn <= 0 && aa < 0.9 && d > 8 && d < 30) w.push(['horn', 3]);
@@ -1226,8 +1410,10 @@ export class BullKing {
     const sum = list.reduce((s, [, x]) => s + x, 0);
     if (!sum) return null;
     let r = Math.random() * sum;
-    for (const [n, x] of list) if ((r -= x) <= 0) return n;
-    return list[list.length - 1][0];
+    let pick = list[list.length - 1][0];
+    for (const [n, x] of list) if ((r -= x) <= 0) { pick = n; break; }
+    if (pick === 'pattern') { this.chainQ = this.enraged ? ['combo2', 'quake'] : ['quake']; cd.quake = 16; return 'combo2'; }
+    return pick;
   }
 
   startAttack(name, player) {
@@ -1237,13 +1423,24 @@ export class BullKing {
     const at = this.atk = { name, def, hit: new Set(), marks: [], fired: new Set(), t0: this.time };
     this.mirror = false;
     this.aimYaw = def.aim ? clamp(this.relAngle(player.pos), -1.0, 1.0) : 0;
-    const speed = this.phase === 2 ? 1.08 : 1;
+    const speed = this.phase === 2 ? (this.duel && this.enraged ? 1.26 : this.duel ? 1.12 : 1.08) : 1;
     const mv = this.playMove(name, { aim: !!def.aim, speed });
-    const big = ['sweep', 'slam', 'breath', 'stompL', 'stompR', 'horn', 'meteor', 'throw'].includes(name);
+    const big = ['sweep', 'slam', 'breath', 'stompL', 'stompR', 'horn', 'meteor', 'throw', 'sweep2', 'slam2', 'combo2', 'charge', 'quake'].includes(name);
     this.events.push({ type: 'attack', name, big });
     const cd = this.cds;
     switch (name) {
       case 'sweep': cd.sweep = 6; break;
+      case 'sweep2': cd.sweep = 3.5; break;
+      case 'combo2': cd.sweep = 5; break;
+      case 'charge': cd.horn = 9; at.dist = 0; break;
+      case 'slam2': cd.slam = 4.5; at.holdFor = rand(0.15, 0.85); break;
+      case 'quake': {
+        cd.quake = 16; cd.slam = Math.max(cd.slam, 3); at.holdFor = 0;
+        const d = horizDist(this.pos, player.pos), go = clamp(d - 24, 0, 34);
+        at.from = this.pos.clone(); at.to = this.pos.clone();
+        if (d > 1) { at.to.x += (player.pos.x - this.pos.x) / d * go; at.to.z += (player.pos.z - this.pos.z) / d * go; }
+        break;
+      }
       case 'slam': cd.slam = 6; at.holdFor = rand(0.25, 1.3); at.line = this.makeSlamLine(); break;
       case 'palmL': case 'palmR': {
         cd.palm = 5;
@@ -1257,9 +1454,9 @@ export class BullKing {
       }
       case 'breath': cd.breath = 15; this.mirror = Math.random() < 0.5; this.aimYaw = 0; at.fireDir = new THREE.Vector3(); at.fireTarget = new THREE.Vector3(); at.patchT = 0; break;
       case 'grab': cd.grab = 10; cd.palm = Math.max(cd.palm, 2.5); this.frontT = 0; at.side = 'Left'; at.target = new THREE.Vector3(); this.palmTarget(player, 'Left', at.target, true); break;
-      case 'stompL': case 'stompR': cd.stomp = 5.5; at.foot = def.foot; break;
+      case 'stompL': case 'stompR': cd.stomp = this.duel ? 9 : 5.5; at.foot = def.foot; break;
       case 'horn': cd.horn = 7; break;
-      case 'meteor': cd.meteor = 22; at.spawned = 0; at.next = 0; break;
+      case 'meteor': cd.meteor = this.duel ? 20 : 22; at.spawned = 0; at.next = 0; break;
       case 'throw': cd.throw = 1e9; at.target = new THREE.Vector3(); this.throwTarget(player, at.target); at.mark = new GroundMark(this.scene, this.arena, 'ring', { w: 9, l: 9, uniforms: { uT: { value: 0 }, uFade: { value: 0 } } }); at.marks.push(at.mark); break;
     }
     void mv;
@@ -1298,6 +1495,11 @@ export class BullKing {
 
   update(dt, player) {
     this.player = player;
+    // the duel: phase two against the monkey grown to his own scale (the cinematics' stand-ins do not change it)
+    if (player && !player.ghost && player.S !== undefined) {
+      const duel = this.phase === 2 && player.S > 1.5;
+      if (duel !== !!this.duel) { this.duel = duel; if (duel) for (const p of PARTS) { this.weak[p].active = false; this.weak[p].broken = false; } }
+    }
     if (dt <= 0) { this.syncRoot(); this.a.update(0); this.afterPose(0); this.updateZones(); return; }
     this.time += dt;
     for (const k in this.cds) this.cds[k] -= dt;
@@ -1307,6 +1509,21 @@ export class BullKing {
       if (this.timeline.every(s => s.done)) this.timeline = [];
     }
     if (this.poiseT > 0) this.poiseT -= dt; else this.poise = Math.max(0, this.poise - this.T.poiseRegen * dt);
+    if (this.flinchT > 0) this.flinchT -= dt;
+    if (this.armorDownT > 0) { this.armorDownT -= dt; if (this.armorDownT <= 0 && this.armor && !this.dead) { this.events.push({ type: 'armorUp' }); this.eyeFlare = 1; this.fx.shockwave(this.bonePos('Spine2'), 26, 0.5, new THREE.Color(1.0, 0.45, 0.1)); this.say('fire_breath', { volume: 0.5, pitch: 0.7 }, 'pillar_charge'); } }
+    if (this.armored) {         // the fire he wears: it climbs off his shoulders, arms and back
+      for (const bn of ARMOR_BONES) if (Math.random() < dt * 12) {
+        const q = this.bonePos(bn, _v);
+        this.bfx.add.emit(_w.set(q.x + rand(-2.4, 2.4), q.y + rand(-2, 2), q.z + rand(-2.4, 2.4)), _p.set(rand(-1.5, 1.5), rand(7, 14), rand(-1.5, 1.5)), Math.random() < 0.3 ? C.fireCore : C.fire, { size: rand(3.5, 7), life: rand(0.5, 0.95), drag: 0.5, grav: -2, alpha: 0.42, grow: 1.3 });
+      }
+    }
+    // the duel's second half: under enrageAt he roars the mountain awake - the fire comes down, and he fights faster
+    if (this.duel && !this.enraged && !this.dead && this.state === 'idle' && this.autoAttack && player && !player.dead && this.hp <= this.maxHp * this.T.enrageAt) {
+      this.enraged = true; this.cds.meteor = 0; this.armor = true; this.armorDownT = 0;
+      this.startAttack('meteor', player);
+      this.events.push({ type: 'enrage' });
+      this.eyeFlare = 1; this.fx.shockwave(this.pos.clone().setY(this.groundAt(this.pos.x, this.pos.z) + 1), 60, 0.9, new THREE.Color(1.0, 0.4, 0.1));
+    }
     this.tickWeak(dt);
     // lingering in front of him invites the grab
     if (player && !player.dead && this.phase === 1) {
@@ -1317,14 +1534,14 @@ export class BullKing {
     switch (this.state) {
       case 'idle': this.tickIdle(dt, player); break;
       case 'attack': if (!mv && !this.atk?.waitEnd) this.endAttack(); break;
-      case 'stagger': if (!mv) { this.state = 'idle'; this.cooldown = 0.8; } break;
+      case 'stagger': if (mv && mv.def.moveRoot) { this.rootMotion(mv, dt); this.keepIn(); } if (!mv) { this.state = 'idle'; this.cooldown = this.reeling ? 0.5 : 0.35; this.reeling = false; } break;
       case 'down': this.tickDown(dt, player, mv); break;
       case 'transition': if (mv && mv.def.moveRoot) this.rootMotion(mv, dt); if (!mv) this.endTransition(); break;
       case 'dead': this.tickDeath(dt); break;
     }
     if (this.state === 'attack' && mv && this.atk?.def.track && this.atk.def.aim && player) {
       const [t0, t1] = this.atk.def.track;
-      if (mv.t >= t0 && mv.t <= t1) this.aimYaw = yawLerp(this.aimYaw, clamp(this.relAngle(player.pos), -1.0, 1.0), 40 * DEG * dt);
+      if (mv.t >= t0 && mv.t <= t1) this.aimYaw = yawLerp(this.aimYaw, clamp(this.relAngle(this.atk.aimAt || player.pos), -1.0, 1.0), 40 * DEG * dt);
     }
     this.composeHold(dt, player);
     this.updateCloth(dt);
@@ -1346,8 +1563,8 @@ export class BullKing {
       const diff = Math.atan2(Math.sin(want - this.yaw), Math.cos(want - this.yaw));
       const d = horizDist(this.pos, player.pos);
       let speed = 0;
-      if (Math.abs(diff) > 0.25) this.yaw = yawLerp(this.yaw, want, this.T.turn2 * DEG * dt);
-      if (d > 36) { speed = this.T.walk2; this.pos.x += Math.sin(this.yaw) * speed * dt; this.pos.z += Math.cos(this.yaw) * speed * dt; }
+      if (Math.abs(diff) > (this.duel ? 0.08 : 0.25)) this.yaw = yawLerp(this.yaw, want, (this.duel ? this.T.duelTurn : this.T.turn2) * DEG * dt);
+      if (this.duel ? d > this.T.duelReach + 4 && Math.abs(diff) < 0.6 : d > 36) { speed = this.duel ? this.T.duelWalk : this.T.walk2; this.pos.x += Math.sin(this.yaw) * speed * dt; this.pos.z += Math.cos(this.yaw) * speed * dt; }
       const moving = speed > 0 || Math.abs(diff) > 0.25;
       if (moving) {
         this.a.playBase('walk', { fade: 0.6 });
@@ -1358,9 +1575,14 @@ export class BullKing {
       } else { this.a.playBase('idle', { fade: 0.8 }); this.a.setBaseTimeScale(0.6); }
     }
     if (!this.autoAttack) return;
+    if (this.openingT >= 0 && this.phase === 1) {
+      if ((this.openingT -= dt) < 0) this.openingSlam();
+      return;
+    }
     this.cooldown -= dt;
     if (this.cooldown <= 0) {
-      const atk = this.chooseAttack(player);
+      const atk = this.chain && this.duel ? this.chain : this.chooseAttack(player);
+      this.chain = null;
       if (atk) this.startAttack(atk, player);
     }
   }
@@ -1375,7 +1597,11 @@ export class BullKing {
     this.mouthGlow.material.opacity = 0;
     if (this.state === 'attack') {
       this.state = 'idle';
-      this.cooldown = this.phase === 1 ? rand(1.3, 2.4) : rand(0.8, 1.6);
+      this.cooldown = this.phase === 1 ? rand(1.3, 2.4) : this.duel ? rand(...(this.enraged ? this.T.rageRest : this.T.duelRest)) : rand(0.8, 1.6);
+      // 连招: out of a sweep he may go straight on into the overhead slam (the guard that held the sweep does not hold that)
+      if (this.duel && at && this.chainQ.length && !at.parried) { this.chain = this.chainQ.shift(); this.cooldown = 0.1; }
+      else if (this.duel && at && (at.name === 'sweep2' || at.name === 'combo2') && !at.parried && Math.random() < (this.enraged ? this.T.rageChainP : this.T.chainP)) { this.chain = 'slam2'; this.cooldown = 0.12; }
+      if (at && at.parried) this.chainQ.length = 0;
     }
   }
 
@@ -1471,6 +1697,59 @@ export class BullKing {
         }
         if (at.eruptAt !== undefined && t >= at.eruptAt) this.eruptAlongLine(at, player, t - at.eruptAt);
         if (L && t > def.impactAt + 1.5) { L.u.uGlow.value *= Math.exp(-dt * 1.5); }
+        if (at.restFor > 0 && t >= def.restAt) {
+          // the opening blow: the staff lies where it fell, both hands on it
+          at.resting = true; mv.speed = 0;
+          if ((at.restFor -= dt) <= 0) { mv.speed = 1; at.resting = false; }
+        }
+        break;
+      }
+      case 'sweep2': {
+        if (t >= def.tellAt && once('tell')) { this.staffGlow = 1; this.say('staff_swing', { pos: this.staffTip, pitch: 0.55, volume: 0.7 }, 'boss_swing'); }
+        if (t >= def.hits[0][0] - 0.1 && once('swing')) this.say('staff_swing', { pos: this.staffTip, pitch: 0.45 }, 'boss_swing');
+        break;
+      }
+      case 'combo2': {
+        if (t >= def.tellAt && once('tell')) { this.staffGlow = 1; this.say('staff_swing', { pos: this.staffTip, pitch: 0.55, volume: 0.7 }, 'boss_swing'); }
+        if (t >= def.hits[0][0] - 0.1 && once('swing')) this.say('staff_swing', { pos: this.staffTip, pitch: 0.45 }, 'boss_swing');
+        if (t >= def.hits[1][0] - 0.25 && once('glow2')) this.staffGlow = 1;
+        if (t >= def.hits[1][0] - 0.1 && once('swing2')) this.say('staff_swing', { pos: this.staffTip, pitch: 0.5 }, 'boss_swing');
+        break;
+      }
+      case 'charge': this.tickCharge(dt, player, mv, at); break;
+      case 'quake': {
+        // 锤地: he leaves the ground, the staff over his head, and comes down with it - the ground where it lands burns
+        if (t >= def.tellAt && once('tell')) { this.staffGlow = 1; this.say('bull_roar', { pitch: 1.05, volume: 0.7 }, 'stagger'); }
+        if (mv.holding) mv.holding = false;
+        const u = clamp((t - 0.35) / (def.impactAt - 0.05 - 0.35), 0, 1);
+        this.jumpY = Math.sin(u * Math.PI) * this.T.height * this.T.quakeJump;
+        if (u > 0 && u < 1) { const e = u * u * (3 - 2 * u); this.pos.x = at.from.x + (at.to.x - at.from.x) * e; this.pos.z = at.from.z + (at.to.z - at.from.z) * e; this.keepIn(); }
+        if (t >= def.impactAt && once('impact')) {
+          this.jumpY = 0;
+          const tip = this.staffTip.clone(); tip.y = this.groundAt(tip.x, tip.z);
+          const c = this.pos.clone().lerp(tip, 0.7); c.y = tip.y;
+          this.bfx.debris(tip, 90, 22); this.bfx.dustRing(tip, 16, 70); this.bfx.burst(tip, 1.4); this.bfx.dustRing(this.pos, 12, 40);
+          this.fx.shockwave(c, this.T.quakeR * 1.1, 0.8, new THREE.Color(1.0, 0.4, 0.1));
+          for (let i = 0; i < 5; i++) { const a = i * 1.257 + 0.4; this.arena?.eruption?.(c.x + Math.cos(a) * this.T.quakeR * 0.55, c.z + Math.sin(a) * this.T.quakeR * 0.55, 1.2); }
+          this.arena?.eruption?.(tip.x, tip.z, 1.6);
+          this.say('bull_slam', { pos: tip, pitch: 0.8 }, 'boss_slam'); this.say('lava_burst', { pos: tip, volume: 1 }, 'boss_slam');
+          this.cam?.addTrauma(1); this.arena?.shake?.(1.2);
+          this.addGroundFire(c.x, c.z, this.T.quakeR, { life: this.T.quakeLife, dmg: this.T.fieldDmg, tick: this.T.fieldTick, arm: 0.7 });
+          this.events.push({ type: 'quake', x: c.x, z: c.z, r: this.T.quakeR });
+        }
+        break;
+      }
+      case 'slam2': {
+        if (t >= def.tellAt && once('tell')) { this.staffGlow = 1; this.say('staff_swing', { pos: this.staffTip, pitch: 0.4, volume: 0.6 }, 'boss_swing'); }
+        if (mv.holding && mv.hold >= at.holdFor) mv.holding = false;
+        if (t >= def.impactAt && once('impact')) {
+          const tip = this.staffTip.clone(); tip.y = this.groundAt(tip.x, tip.z);
+          this.bfx.debris(tip, 60, 16); this.bfx.dustRing(tip, 10, 50); this.bfx.burst(tip, 0.8);
+          this.fx.shockwave(tip, 16, 0.6, new THREE.Color(1.0, 0.45, 0.15));
+          this.arena?.eruption?.(tip.x, tip.z, 1.0);
+          this.say('bull_slam', { pos: tip }, 'boss_slam');
+          this.cam?.addTrauma(0.8); this.arena?.shake?.(0.9);
+        }
         break;
       }
       case 'palmL': case 'palmR': this.tickPalm(dt, player, mv, at); break;
@@ -1630,10 +1909,10 @@ export class BullKing {
     }
   }
 
-  addGroundFire(x, z, r) {
-    const mark = new GroundMark(this.scene, this.arena, 'fire', { w: r * 2.4, l: r * 2.4, segs: 8, uniforms: { uT: { value: 0 }, uFade: { value: 0 } } });
+  addGroundFire(x, z, r, { life = rand(6, 8), dmg = this.T.firePatchDmg, tick = 1.2, arm = 0.4 } = {}) {
+    const mark = new GroundMark(this.scene, this.arena, 'fire', { w: r * 2.4, l: r * 2.4, segs: 8, uniforms: { uT: { value: 0 }, uFade: { value: 0 }, uBig: { value: r > 12 ? 1 : 0 } } });
     mark.place(x, z, Math.random() * 6);
-    this.groundFires.push({ x, z, r, t: 0, life: rand(6, 8), mark, out: false, hitCd: 0 });
+    this.groundFires.push({ x, z, r, t: 0, life, dmg, tick, arm, mark, out: false, hitCd: 0 });
   }
 
   tickGrab(dt, player, mv, at) {
@@ -1712,7 +1991,7 @@ export class BullKing {
         at.fired.add('tell');
         this.say('bull_roar', { pitch: 0.8, volume: 0.6 }, 'stagger');
         const g = foot.clone(); g.y = this.groundAt(g.x, g.z);
-        at.ring = new GroundMark(this.scene, this.arena, 'ring', { w: 16, l: 16, uniforms: { uT: { value: 0 }, uFade: { value: 0 } } }).place(g.x, g.z, 0);
+        at.ring = new GroundMark(this.scene, this.arena, 'ring', { w: this.duel ? 44 : 16, l: this.duel ? 44 : 16, uniforms: { uT: { value: 0 }, uFade: { value: 0 } } }).place(g.x, g.z, 0);
         at.marks.push(at.ring);
       }
     }
@@ -1729,8 +2008,8 @@ export class BullKing {
       this.arena?.eruption?.(p.x, p.z, 1.2);
       this.say('bull_stomp', { pos: p }, 'boss_slam');
       this.cam?.addTrauma(0.9); this.arena?.shake?.(1);
-      if (player && !player.dead && horizDist(player.pos, p) < 7.5) { at.hit.add('crush'); this.hitPlayer(player, { dmg: 34, kind: 'heavy' }, p, at.name); }
-      this.hazards.push(new LavaWave(this, p, at.hit));
+      if (player && !player.dead && horizDist(player.pos, p) < (this.duel ? 19 : 7.5)) { at.hit.add('crush'); this.hitPlayer(player, { dmg: this.duel ? this.T.duelCrushDmg : 34, kind: 'heavy' }, p, at.name); }
+      this.hazards.push(new LavaWave(this, p, at.hit, this.duel));
     }
   }
 
@@ -1770,11 +2049,15 @@ export class BullKing {
     }
     if (t >= r0 && t <= r1) {
       at.next -= dt;
-      if (at.next <= 0 && at.spawned < 14) {
-        at.next = rand(0.2, 0.36);
+      if (at.next <= 0 && at.spawned < (this.duel ? 12 : 14)) {
+        at.next = this.duel ? rand(0.24, 0.4) : rand(0.2, 0.36);
         const target = new THREE.Vector3();
-        const b = this.arena?.bounds;
-        if (player && at.spawned % 2 === 0) {
+        const b = this.bnd;
+        if (this.duel && player) {
+          // onto him (leading his run) and around him, in turn: he has to keep moving, and look where he steps
+          if (at.spawned % 2 === 0) { const lead = (player.speed || 0) * 1.1; target.set(player.pos.x + Math.sin(player.yaw || 0) * lead + rand(-5, 5), 0, player.pos.z + Math.cos(player.yaw || 0) * lead + rand(-5, 5)); }
+          else { const a = Math.random() * Math.PI * 2, rr = rand(22, 55); target.set(player.pos.x + Math.cos(a) * rr, 0, player.pos.z + Math.sin(a) * rr); }
+        } else if (player && at.spawned % 2 === 0) {
           const lead = (player.speed || 0) * 0.9;
           target.set(player.pos.x + Math.sin(player.yaw || 0) * lead + rand(-3, 3), 0, player.pos.z + Math.cos(player.yaw || 0) * lead + rand(-3, 3));
         } else {
@@ -1783,9 +2066,40 @@ export class BullKing {
         }
         if (b) { target.x = clamp(target.x, b.minX + 2, b.maxX - 2); target.z = clamp(target.z, b.minZ + 2, b.maxZ - 2); }
         target.y = this.groundAt(target.x, target.z);
-        this.hazards.push(new Meteor(this, target, rand(1.3, 1.7)));
+        this.hazards.push(new Meteor(this, target, this.duel ? rand(1.7, 2.1) : rand(1.3, 1.7), this.duel ? 3 : 1));
         at.spawned++;
       }
+    }
+  }
+
+  /** 冲撞: he lines up on the monkey while he paws the ground, then runs straight - through him, if he is still there. */
+  tickCharge(dt, player, mv, at) {
+    const def = at.def, t = mv.t;
+    if (t >= def.tellAt && !at.fired.has('tell')) { at.fired.add('tell'); this.say('bull_roar', { pitch: 0.75, volume: 1 }, 'stagger'); this.eyeFlare = 1; }
+    if (t < def.runAt) {
+      if (player) this.yaw = yawLerp(this.yaw, Math.atan2(player.pos.x - this.pos.x, player.pos.z - this.pos.z), 80 * DEG * dt);
+      if ((at.paw = (at.paw || 0) + dt) > 0.45 && t > 0.5) { at.paw = 0; this.footfall(at.pawSide = at.pawSide === 'Left' ? 'Right' : 'Left', 0.7); }
+      return;
+    }
+    if (t >= def.runEnd || at.stopped) {
+      if (!at.fired.has('skid')) { at.fired.add('skid'); mv.t = Math.max(mv.t, def.runEnd); this.footfall('Left', 1.2); this.footfall('Right', 1.2); this.a.playBase('idle', { fade: 0.5 }); }
+      return;
+    }
+    if (!at.fired.has('go')) { at.fired.add('go'); this.say('bull_stomp', { volume: 1, pitch: 0.8 }, 'boss_slam'); this.cam?.addTrauma(0.5); this.a.playBase('walk', { fade: 0.15 }); }
+    this.a.setBaseTimeScale(1.5);
+    const step = this.T.chargeSpeed * dt * mv.speed, f = this.fwd(_v);
+    this.pos.x += f.x * step; this.pos.z += f.z * step; at.dist += step;
+    if (this.keepIn(16)) at.stopped = true;
+    if ((at.paw = (at.paw || 0) + dt) > 0.22) { at.paw = 0; this.footfall(at.pawSide = at.pawSide === 'Left' ? 'Right' : 'Left', 0.9); }
+    if (player && !player.dead) {
+      const dx = player.pos.x - this.pos.x, dz = player.pos.z - this.pos.z, along = dx * f.x + dz * f.z, side = Math.abs(dx * f.z - dz * f.x);
+      const reach = 8 + 0.45 * (player.S || 1);
+      if (!at.hit.has('c') && along > -4 && along < reach + 6 && side < reach) {
+        at.hit.add('c');
+        this.hitPlayer(player, { dmg: this.T.chargeDmg, kind: 'heavy', blockable: false }, this.bonePos('Head', new THREE.Vector3()), 'charge');
+        this.cam?.addTrauma(0.8);
+      }
+      if (along < -22 && at.dist > 30) at.stopped = true;       // past him: dig the hooves in
     }
   }
 
@@ -1855,13 +2169,14 @@ export class BullKing {
 
   syncRoot() {
     const r = this.char.root;
-    r.position.set(this.pos.x, this.pos.y - this.sink, this.pos.z);
+    r.position.set(this.pos.x, this.pos.y - this.sink + (this.lift || 0) * (this.liftW || 0) + (this.jumpY || 0), this.pos.z);
     r.rotation.y = this.yaw;
     r.updateMatrixWorld(true);
   }
 
   /** After the pose: world-space hand targets, the palm laid flat, the staff, head parts, eyes, cracks. */
   afterPose(dt) {
+    this.groundFeet(dt);
     for (const side of ['Left', 'Right']) {
       const ik = this.ik[side];
       if (!ik) continue;
@@ -1910,6 +2225,67 @@ export class BullKing {
     this.updateBodyCircles();
   }
 
+  /** The surface a hoof (or a knee) at (x, z) rests on: pressed a little into rock, ankle-deep in the lava lake. */
+  supportY(x, z) {
+    const g = this.groundAt(x, z), lava = this.arena?.lavaAt ? this.arena.lavaAt(x, z) || 0 : 0;
+    if (lava > 0.5) return Math.min(g, this.arena.lavaY ?? g) - this.T.wade;
+    return g - this.T.press;
+  }
+
+  /** Lowest point of a hoof (world). */
+  soleOf(side, out = new THREE.Vector3()) {
+    out.set(0, Infinity, 0);
+    for (const s of this.soles[side]) { _p.copy(s.local).applyMatrix4(s.bone.matrixWorld); if (_p.y < out.y) out.copy(_p); }
+    if (out.y === Infinity) this.bonePos(side + 'ToeBase', out);
+    return out;
+  }
+
+  /**
+   * Standing, he is carried by his hooves: the model's clips hold the soles well above its root (the root sits at the
+   * lowest point of the bind pose, a pointed hoof), so the root is lowered until the supporting hoof — or a knee, when
+   * he kneels — rests on what is under it. Fades in as he draws his feet under him in the rise; frozen once he falls.
+   */
+  groundFeet(dt) {
+    const mv = this.a.move;
+    let w = 0;
+    if (this.state === 'transition') w = mv ? smooth(this.T.groundIn[0], this.T.groundIn[1], mv.t) : 1;
+    else if (this.phase === 2) w = 1;
+    this.liftW = w;
+    if (w <= 0) { this.lift = 0; return; }
+    if (this.dead && this.deathT > 1.2) return;            // toppling: keep what he had
+    if (this.jumpY > 0.5) return;                          // in the air (锤地): the hooves leave the ground
+    // the clips stand him on the very points of his hooves, the fetlocks metres in the air: from the front he seems
+    // to hover. Lay each hoof down along the ground (its point a little below the ankle, T.hoofPitch) while the leg is
+    // under him; a leg folded behind him (kneeling) keeps its own angle.
+    for (const s of ['Left', 'Right']) {
+      const tipL = this.hoofTip[s], foot = this.B[s + 'Foot'];
+      if (!tipL || !foot) continue;
+      const knee = this.bonePos(s + 'Leg', _e), up = (knee.y - this.groundAt(knee.x, knee.z)) / this.legLen;
+      const fw = w * smooth(0.22, 0.4, up);
+      if (fw <= 0.001) continue;
+      foot.updateMatrixWorld(true);
+      const ankle = foot.getWorldPosition(_ha), dir = _hb.copy(tipL).applyMatrix4(foot.matrixWorld).sub(ankle);
+      const h = _hc.set(dir.x, 0, dir.z);
+      if (h.lengthSq() < 1e-4 * dir.lengthSq()) this.fwd(h);
+      h.normalize();
+      const a = this.T.hoofPitch * DEG;
+      this.rig.rotateWorld(foot, _q.setFromUnitVectors(dir.normalize(), _p.copy(h).multiplyScalar(Math.cos(a)).setY(-Math.sin(a))), fw);
+    }
+    let d = Infinity, d2 = Infinity;
+    for (const s of ['Left', 'Right']) {
+      const sole = this.soleOf(s, _e);
+      let di = sole.y - this.supportY(sole.x, sole.z);
+      const k = this.bonePos(s + 'Leg', _e);
+      di = Math.min(di, k.y - this.legLen * 0.075 - (this.groundAt(k.x, k.z) - this.T.press));
+      if (di < d) { d2 = d; d = di; } else if (di < d2) d2 = di;
+    }
+    // both feet down on uneven ground: stand on the higher one's terms only when the other is nearly there too
+    if (d2 - d < this.legLen * 0.05) d = (d + d2) / 2;
+    const want = this.lift * w - d;        // (measured with lift * w applied: the full offset that makes contact)
+    if (dt <= 0 || this.liftFresh) { this.lift = want; this.liftFresh = false; }
+    else this.lift += (want - this.lift) * (1 - Math.exp(-16 * dt));
+  }
+
   /** Arm IK to a world target with an optional flat palm; leans further forward when the ground is out of reach. */
   solveHand(side, target, w, flat) {
     const B = this.B, rig = this.rig;
@@ -1943,10 +2319,10 @@ export class BullKing {
   }
 
   updateBodyCircles() {
-    const c = this.bodyCircles || (this.bodyCircles = [0, 1, 2, 3, 4, 5].map(() => ({ x: 0, z: 0, r: 0 })));
+    const c = this.bodyCircles || (this.bodyCircles = Array.from({ length: 6 + STAFF_CIRCLES }, () => ({ x: 0, z: 0, r: 0 })));
     const L = this.legLen;
     const set = (i, p, r) => { c[i].x = p.x; c[i].z = p.z; c[i].r = r; };
-    set(0, this.bonePos('Hips', _v), L * (this.phase === 1 ? 0.42 : 0.22));
+    set(0, this.bonePos('Hips', _v), L * (this.phase === 1 ? 0.42 : this.duel ? 0.5 : 0.22));       // (the duel: a body a giant cannot stand inside)
     if (this.phase === 1) {
       set(1, this.bonePos('LeftLeg', _v), L * 0.17); set(2, this.bonePos('RightLeg', _v), L * 0.17);
       set(3, this.bonePos('LeftFoot', _v), L * 0.15); set(4, this.bonePos('RightFoot', _v), L * 0.15);
@@ -1956,6 +2332,19 @@ export class BullKing {
     }
     const resting = this.weak.handL.resting ? 'Left' : this.weak.handR.resting ? 'Right' : null;
     if (resting) set(5, this.handCenter(resting, _hc), this.hand[resting].len * 0.45); else c[5].r = 0;
+    // the iron staff lying on the stone (the prologue) is a wall, not a ghost: neither the monkey nor the lens goes into it
+    const A = this.staffButt, B = this.staffTip;
+    const still = this._tipLast && B.distanceTo(this._tipLast) < 0.05;
+    (this._tipLast || (this._tipLast = new THREE.Vector3())).copy(B);
+    this._stillN = still ? (this._stillN || 0) + 1 : 0;
+    const lying = this.phase === 1 && this.staffMode === 'hand' && this._stillN > 12
+      && A.y - this.groundAt(A.x, A.z) < 3.2 && B.y - this.groundAt(B.x, B.z) < 3.2;
+    const sr = (this.staff?.userData.radius || this.T.staffRadius) * 1.7;
+    for (let i = 0; i < STAFF_CIRCLES; i++) {
+      const k = c[6 + i], f = i / (STAFF_CIRCLES - 1);
+      if (!lying) { k.r = 0; continue; }
+      k.x = A.x + (B.x - A.x) * f; k.z = A.z + (B.z - A.z) * f; k.r = sr; k.top = 2.6; k.staff = true;
+    }
   }
 
   // --------------------------------------------------------------------------------------------- zones / cracks
@@ -1982,8 +2371,9 @@ export class BullKing {
     if (!this.zones.length) {
       const z = (part, r) => ({ part, a: new THREE.Vector3(), b: new THREE.Vector3(), r });
       this.zones = [z('handL', 0), z('handR', 0), z('kneeL', 0), z('kneeR', 0), z('head', 0),
-        z('body', 0), z('body', 0), z('body', 0), z('body', 0), z('body', 0), z('body', 0), z('body', 0), z('body', 0), z('body', 0), z('body', 0)];
-      this.locks = ['handL', 'handR', 'kneeL', 'kneeR', 'head', 'body'].map(part => ({ part, pos: new THREE.Vector3(), weak: part !== 'body' && part !== 'head', broken: false, open: true }));
+        z('body', 0), z('body', 0), z('body', 0), z('body', 0), z('body', 0), z('body', 0), z('body', 0), z('body', 0), z('body', 0), z('body', 0),
+        z('staff', 0)];
+      this.locks = ['handL', 'handR', 'kneeL', 'kneeR', 'head', 'body', 'staff'].map(part => ({ part, pos: new THREE.Vector3(), weak: part !== 'body' && part !== 'head', broken: false, open: true }));
     }
     const Z = this.zones;
     const u = this.look.uniforms;
@@ -2012,12 +2402,15 @@ export class BullKing {
         u.bkWA.value[i].set(kn.a1.x, kn.a1.y, kn.a1.z, kn.r1); u.bkWB.value[i].set(kn.b1.x, kn.b1.y, kn.b1.z, this.crackGlow(w));
         w.pos.copy(knee).lerp(this.bonePos(s + 'Foot', _v), 0.05);
       } else {
-        zone.a.copy(knee);
-        zone.b.copy(this.bonePos(s + 'Foot', _v)).lerp(this.bonePos(s + 'ToeBase', _w), 0.3);
-        zone.r = L * 0.115;
+        // standing: the crack runs down the lower shin, over the ankle and into the hoof — the part of him a 1.5 m
+        // monkey can reach (the knee itself is ten metres up)
+        const foot = this.bonePos(s + 'Foot', _v), sole = this.soleOf(s, _e);
+        zone.a.copy(knee).lerp(foot, 0.5);
+        zone.b.copy(foot).lerp(this.bonePos(s + 'ToeBase', _w), 0.75); zone.b.y = (zone.b.y + sole.y) * 0.5;
+        zone.r = L * 0.135;
         u.bkWA.value[i].set(kn.a2.x, kn.a2.y, kn.a2.z, kn.r2); u.bkWB.value[i].set(kn.b2.x, kn.b2.y, kn.b2.z, this.crackGlow(w));
-        // aim at the reachable part of the shin
-        w.pos.copy(this.bonePos(s + 'Leg', _v)).lerp(this.bonePos(s + 'Foot', _w), 0.72);
+        // the lock: the front of the ankle, at the height of the monkey's swing
+        w.pos.copy(zone.b).lerp(zone.a, 0.12); w.pos.y = Math.min(w.pos.y, Math.max(sole.y, this.groundAt(w.pos.x, w.pos.z)) + 1.6);
       }
       u.bkWC.value[i].set(1 - w.hp / w.max, w.broken ? 1 : 0, w.flash, w.burst);
     });
@@ -2031,11 +2424,19 @@ export class BullKing {
     seg(9, 'LeftLeg', 'LeftFoot', L * 0.11); seg(10, 'RightLeg', 'RightFoot', L * 0.11);
     seg(11, 'LeftArm', 'LeftForeArm', L * 0.09); seg(12, 'RightArm', 'RightForeArm', L * 0.09);
     seg(13, 'LeftForeArm', 'LeftHand', L * 0.075); seg(14, 'RightForeArm', 'RightHand', L * 0.075);
+    // the staff lying on the ground after a slam (the opening blow): something to hit
+    const sz = Z[15], lying = this.phase === 1 && this.staffMode === 'hand' && this.atk?.name === 'slam' && this.atk.fired.has('impact');
+    if (lying) { sz.a.copy(this.staffPoint(0.3, _v)); sz.b.copy(this.staffTip); sz.r = (this.staff.userData.radius || 0.8) * 1.15; }
+    else { sz.a.set(0, -1e4, 0); sz.b.set(0, -1e4, 0); sz.r = 0; }
     // lock targets
     const lk = this.locks;
     for (let i = 0; i < 4; i++) { const w = this.weak[PARTS[i]]; lk[i].pos.copy(w.pos); lk[i].broken = w.broken; lk[i].weak = w.active; lk[i].open = w.active && !w.broken; }
     lk[4].pos.copy(Z[4].a).lerp(Z[4].b, 0.6); lk[4].open = this.state === 'down';
     this.bonePos('Spine2', lk[5].pos);
+    // (the staff: its near part, where the monkey stands when he has dodged the blow)
+    if (lying) { const pl = this.player && !this.player.ghost ? this.player.pos : sz.b; const r = segSeg(sz.a, sz.b, pl, pl); lk[6].pos.copy(r.c1); lk[6].pos.y += sz.r * 0.5; }
+    else lk[6].pos.copy(lk[5].pos);
+    lk[6].weak = lying; lk[6].open = lying; lk[6].broken = false;
   }
 
   /** Brightness of a crack: dim at rest, brighter with damage and while exposed, a hot core once broken. */
@@ -2043,7 +2444,7 @@ export class BullKing {
     if (!w.active) return 0;
     if (w.broken) return 0.25 + 0.6 * w.burst;
     const dmg = 1 - w.hp / w.max;
-    return 0.55 + 1.5 * dmg + (w.resting ? 0.5 : 0) + (w.exposedT > 0 ? 0.6 + 0.3 * Math.sin(this.time * 14) : 0);
+    return 0.38 + 1.5 * dmg + (w.resting ? 0.5 : 0) + (w.exposedT > 0 ? 0.6 + 0.3 * Math.sin(this.time * 14) : 0);
   }
 
   // --------------------------------------------------------------------------------------------- hazards / ambience
@@ -2054,10 +2455,11 @@ export class BullKing {
       f.t += dt; f.hitCd -= dt;
       f.mark.u.uTime.value = this.time;
       f.mark.u.uFade.value = smooth(f.life - 1.2, f.life, f.t);
-      if (!f.out && Math.random() < dt * 5) this.bfx.add.emit(_v.set(f.x + rand(-f.r, f.r) * 0.6, this.groundAt(f.x, f.z) + 0.3, f.z + rand(-f.r, f.r) * 0.6), _w.set(rand(-0.5, 0.5), rand(2, 4), rand(-0.5, 0.5)), C.fire, { size: rand(0.8, 1.8), life: rand(0.4, 0.8), drag: 0.6, grav: 2, alpha: 0.7, grow: 1.2 });
-      if (!f.out && player && !player.dead && f.hitCd <= 0 && f.t > 0.4 && Math.hypot(player.pos.x - f.x, player.pos.z - f.z) < f.r * 0.85 && player.pos.y - this.groundAt(f.x, f.z) < 1) {
-        f.hitCd = 1.2;
-        this.hitPlayer(player, { dmg: this.T.firePatchDmg, kind: 'light' }, new THREE.Vector3(f.x, 0, f.z), 'fire');
+      const big = f.r > 12 ? 4 : 1;
+      if (!f.out && Math.random() < dt * (big > 1 ? 60 : 5)) { const a = rand(0, 6.283), q = Math.sqrt(Math.random()) * f.r * 0.8; this.bfx.add.emit(_v.set(f.x + Math.cos(a) * q, this.groundAt(f.x, f.z) + 0.3 * big, f.z + Math.sin(a) * q), _w.set(rand(-0.5, 0.5) * big, rand(2, 4) * big, rand(-0.5, 0.5) * big), Math.random() < 0.25 ? C.fireCore : C.fire, { size: rand(0.8, 1.8) * big, life: rand(0.4, 0.8) * (big > 1 ? 1.6 : 1), drag: 0.6, grav: 2, alpha: big > 1 ? 0.3 : 0.7, grow: 1.2 }); }
+      if (!f.out && player && !player.dead && f.hitCd <= 0 && f.t > f.arm && Math.hypot(player.pos.x - f.x, player.pos.z - f.z) < f.r * 0.85 && (this.duel || player.pos.y - this.groundAt(f.x, f.z) < 1)) {
+        f.hitCd = f.tick;
+        this.hitPlayer(player, { dmg: f.dmg, kind: 'light', blockable: false }, new THREE.Vector3(f.x, 0, f.z), 'fire');
       }
     }
     this.groundFires = this.groundFires.filter(f => { if (f.t >= f.life) { f.mark.remove(); return false; } return true; });
@@ -2104,11 +2506,11 @@ const WAVE_FS = /* glsl */`uniform float uT; uniform float uTime; uniform vec2 u
 
 /** A ring of lava pushed out by a stomp. Damages once as its crest passes; pillars break it (they cast a gap). */
 class LavaWave {
-  constructor(bull, center, hitSet) {
-    this.b = bull; this.c = center.clone(); this.t = 0; this.dur = 1.9; this.max = 40; this.hitSet = hitSet;
+  constructor(bull, center, hitSet, duel = false) {
+    this.b = bull; this.c = center.clone(); this.t = 0; this.dur = duel ? 0.55 + (125 - 20) / 46 : 1.9; this.max = duel ? 125 : 40; this.hitSet = hitSet; this.duel = duel;
     this.r = 3;
     const gaps = [0, 1, 2, 3, 4, 5, 6, 7].map(() => new THREE.Vector4());
-    const cols = (bull.arena?.colliders || []).filter(c => Math.hypot(c.x - center.x, c.z - center.z) < this.max + c.r).slice(0, 8);
+    const cols = duel ? [] : (bull.arena?.colliders || []).filter(c => Math.hypot(c.x - center.x, c.z - center.z) < this.max + c.r).slice(0, 8);
     cols.forEach((c, i) => {
       const dx = c.x - center.x, dz = c.z - center.z, d = Math.hypot(dx, dz);
       gaps[i].set(Math.atan2(dz, dx), Math.asin(Math.min(0.99, c.r / Math.max(d, c.r + 0.01))), d, 1);
@@ -2123,19 +2525,22 @@ class LavaWave {
   update(dt, player) {
     this.t += dt;
     const f = Math.min(1, this.t / this.dur);
-    this.r = 3 + (this.max - 3) * (1 - Math.pow(1 - f, 1.6));
-    const h = 3.2 * (1 - f * 0.55);
+    const D = this.duel;
+    // (the duel: the ring gathers round the hoof for a beat - time to see it - then rolls out at a steady pace)
+    this.live = !D || this.t >= 0.55;
+    this.r = D ? (this.live ? 20 + (this.t - 0.55) * 46 : 20 * smooth(0, 0.55, this.t)) : 3 + (this.max - 3) * (1 - Math.pow(1 - f, 1.6));
+    const h = (D ? 11 : 3.2) * (1 - f * 0.55) * (this.live ? 1 : 0.35 + 0.65 * this.t / 0.55);
     this.mesh.scale.set(this.r, h, this.r);
     this.mat.uniforms.uT.value = f; this.mat.uniforms.uTime.value = this.b.time;
-    if (Math.random() < 0.7) {
-      const a = Math.random() * Math.PI * 2, x = this.c.x + Math.cos(a) * this.r, z = this.c.z + Math.sin(a) * this.r;
-      if (!this.b.occluded(this.c.x, this.c.z, x, z)) this.b.bfx.add.emit(_v.set(x, this.b.groundAt(x, z) + h * 0.8, z), _w.set(Math.cos(a) * 4, rand(2, 6), Math.sin(a) * 4), C.lava, { size: rand(0.5, 1.2), life: rand(0.4, 0.8), drag: 0.5, grav: -10, alpha: 0.9 });
+    for (let i = D ? 4 : 1; i--;) if (Math.random() < 0.7) {
+      const a = Math.random() * Math.PI * 2, x = this.c.x + Math.cos(a) * this.r, z = this.c.z + Math.sin(a) * this.r, k = D ? 3 : 1;
+      if (D || !this.b.occluded(this.c.x, this.c.z, x, z)) this.b.bfx.add.emit(_v.set(x, this.b.groundAt(x, z) + h * 0.8, z), _w.set(Math.cos(a) * 4 * k, rand(2, 6) * k, Math.sin(a) * 4 * k), C.lava, { size: rand(0.5, 1.2) * k, life: rand(0.4, 0.8), drag: 0.5, grav: -10 * k, alpha: 0.9 });
     }
-    if (player && !player.dead && !this.hitSet.has('wave')) {
+    if (this.live && player && !player.dead && !this.hitSet.has('wave')) {
       const d = horizDist(player.pos, this.c);
-      if (Math.abs(d - this.r) < 1.8 && player.pos.y - this.b.groundAt(player.pos.x, player.pos.z) < h * 0.8 && !this.b.occluded(this.c.x, this.c.z, player.pos.x, player.pos.z)) {
+      if ((D ? d - this.r > -1.5 && d - this.r < 5 : Math.abs(d - this.r) < 1.8) && player.pos.y - this.b.groundAt(player.pos.x, player.pos.z) < h * 0.8 && (D || !this.b.occluded(this.c.x, this.c.z, player.pos.x, player.pos.z))) {
         this.hitSet.add('wave');
-        this.b.hitPlayer(player, { dmg: this.b.T.waveDmg, kind: 'heavy' }, new THREE.Vector3(this.c.x, 0, this.c.z), 'stomp');
+        this.b.hitPlayer(player, { dmg: D ? this.b.T.duelWaveDmg : this.b.T.waveDmg, kind: 'heavy' }, new THREE.Vector3(this.c.x, 0, this.c.z), 'stomp');
       }
     }
     if (f >= 1) { this.remove(); return false; }
@@ -2146,14 +2551,16 @@ class LavaWave {
 
 /** A lava bomb: a ring on the ground fills, the bomb comes down out of the smoke, bursts. */
 class Meteor {
-  constructor(bull, target, dur) {
-    this.b = bull; this.target = target; this.dur = dur; this.t = 0;
-    this.mark = new GroundMark(bull.scene, bull.arena, 'ring', { w: 8, l: 8, segs: 8, uniforms: { uT: { value: 0 }, uFade: { value: 0 } } }).place(target.x, target.z, 0);
+  constructor(bull, target, dur, scale = 1) {
+    this.b = bull; this.target = target; this.dur = dur; this.t = 0; this.k = scale;
+    this.mark = new GroundMark(bull.scene, bull.arena, 'ring', { w: 8 * scale, l: 8 * scale, segs: 8, uniforms: { uT: { value: 0 }, uFade: { value: 0 } } }).place(target.x, target.z, 0);
     const back = bull.fwd(new THREE.Vector3()).multiplyScalar(-60);
     this.from = new THREE.Vector3(target.x * 0.4 + bull.pos.x * 0.6 + back.x + rand(-20, 20), 140, target.z * 0.4 + bull.pos.z * 0.6 + back.z + rand(-20, 20));
     if (!Meteor.geo) Meteor.geo = new THREE.DodecahedronGeometry(1.4, 1);
     if (!Meteor.mat) Meteor.mat = new THREE.MeshStandardMaterial({ color: 0x1a0f0a, emissive: new THREE.Color(1.0, 0.35, 0.08), emissiveIntensity: 2.2, roughness: 0.9 });
-    this.rock = new THREE.Mesh(Meteor.geo, Meteor.mat); this.rock.visible = false;
+    // (a giant's bomb is seen from close by: a dark rock with a dull glow, the fire is in its trail)
+    if (scale > 1 && !Meteor.matBig) Meteor.matBig = new THREE.MeshStandardMaterial({ color: 0x2a1a12, emissive: new THREE.Color(0.9, 0.22, 0.04), emissiveIntensity: 0.55, roughness: 1, flatShading: true });
+    this.rock = new THREE.Mesh(Meteor.geo, scale > 1 ? Meteor.matBig : Meteor.mat); this.rock.visible = false; this.rock.scale.setScalar(scale);
     bull.scene.add(this.rock);
     this.flight = 0.75;
   }
@@ -2168,17 +2575,18 @@ class Meteor {
       this.rock.visible = true;
       this.rock.position.lerpVectors(this.from, this.target, u * u * 0.3 + u * 0.7);
       this.rock.rotation.x += dt * 5; this.rock.rotation.z += dt * 3;
-      for (let i = 0; i < 3; i++) b.bfx.add.emit(this.rock.position, _w.set(rand(-1, 1), rand(-1, 2), rand(-1, 1)), Math.random() < 0.4 ? C.fireCore : C.fire, { size: rand(1.5, 3.2), life: rand(0.3, 0.6), drag: 1, grav: 0, alpha: 0.85, grow: 1.4 });
+      for (let i = 0; i < 3; i++) b.bfx.add.emit(this.rock.position, _w.set(rand(-1, 1), rand(-1, 2), rand(-1, 1)), Math.random() < 0.4 ? C.fireCore : C.fire, { size: rand(1.5, 3.2) * this.k, life: rand(0.3, 0.6), drag: 1, grav: 0, alpha: 0.85, grow: 1.4 });
       if (Math.random() < 0.5) b.bfx.alpha.emit(this.rock.position, _w.set(rand(-1, 1), rand(0, 2), rand(-1, 1)), C.smoke, { size: rand(3, 6), life: rand(1.2, 2), drag: 0.6, grav: 0.2, alpha: 0.3, grow: 1.4 });
     }
     if (this.t >= this.dur && !this.done) {
       this.done = true; this.rock.visible = false;
       const p = this.target.clone();
       b.arena?.eruption?.(p.x, p.z, 1);
-      b.bfx.burst(p.clone().setY(p.y + 0.5), 0.9); b.bfx.debris(p, 30, 10); b.bfx.dustRing(p, 5, 20);
+      b.bfx.burst(p.clone().setY(p.y + 0.5), 0.9 * this.k); b.bfx.debris(p, 30, 10 * this.k); b.bfx.dustRing(p, 5 * this.k, 20);
+      if (this.k > 1) b.fx.shockwave(p.clone().setY(p.y + 0.5), 4.2 * this.k, 0.5, new THREE.Color(1.0, 0.45, 0.12));
       b.say('lava_burst', { pos: p, volume: 0.9 }, 'pillar_blast');
       b.cam?.addTrauma(Math.max(0.1, 0.45 - (player ? horizDist(player.pos, p) * 0.01 : 0)));
-      if (player && !player.dead && horizDist(player.pos, p) < 4.2 && player.pos.y - p.y < 3) b.hitPlayer(player, { dmg: b.T.meteorDmg, kind: 'heavy' }, p, 'meteor');
+      if (player && !player.dead && horizDist(player.pos, p) < 4.2 * this.k && player.pos.y - p.y < 3) b.hitPlayer(player, { dmg: this.k > 1 ? b.T.duelMeteorDmg : b.T.meteorDmg, kind: 'heavy' }, p, 'meteor');
     }
     if (this.done) this.mark.u.uFade.value = Math.min(1, (this.t - this.dur) / 0.4);
     if (this.t > this.dur + 0.5) { this.remove(); return false; }

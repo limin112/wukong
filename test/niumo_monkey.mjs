@@ -217,8 +217,8 @@ async function parry() {
   check(r && r.hp1 === r.hp0, 'parry costs no health', `${r?.hp0} -> ${r?.hp1}`);
   r = await run('parry tap 0.15s', { press: true, hold: false, before: 0.15 });
   check(r && r.result === 'parry', 'a tapped L (released) still parries inside the window', JSON.stringify(r));
-  r = await run('late 0.3s', { press: true, hold: true, before: 0.3 });
-  check(r && r.result === 'block', 'L held 0.3 s before the blow only blocks', JSON.stringify(r));
+  r = await run('late 0.42s', { press: true, hold: true, before: 0.42 });      // (the parry window is 0.3 s)
+  check(r && r.result === 'block', 'L held 0.42 s before the blow only blocks', JSON.stringify(r));
   check(r && r.hp1 < r.hp0 && r.hp0 - r.hp1 < 5, 'block chips a little health', `${r?.hp0} -> ${r?.hp1}`);
   await view('side'); await shot('block_side');
   r = await run('held 0.6s', { press: true, hold: true, before: 0.6 });
@@ -231,11 +231,11 @@ async function parry() {
   check(r && r.result === true && r.hp1 < r.hp0, 'no guard: hit', JSON.stringify(r));
   const s = await state();
   check(s.move === 'knockdown', 'a heavy blow knocks him down', s.move);
-  // window edge (sim time, deterministic): 0.18 parries, 0.24 does not
-  r = await run('edge 0.18', { press: true, hold: true, before: 0.18 });
-  check(r.result === 'parry', 'parry window edge: 0.18 s parries', r.result);
-  r = await run('edge 0.24', { press: true, hold: true, before: 0.24 });
-  check(r.result === 'block', 'parry window edge: 0.24 s blocks', r.result);
+  // window edge (sim time, deterministic): 0.26 parries, 0.36 does not (the window is 0.3 s)
+  r = await run('edge 0.26', { press: true, hold: true, before: 0.26 });
+  check(r.result === 'parry', 'parry window edge: 0.26 s parries', r.result);
+  r = await run('edge 0.36', { press: true, hold: true, before: 0.36 });
+  check(r.result === 'block', 'parry window edge: 0.36 s blocks', r.result);
 }
 
 async function iframes() {

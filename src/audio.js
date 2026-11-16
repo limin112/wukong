@@ -100,7 +100,8 @@ export class AudioSystem {
     }
     this._eng.setVolumes(this._vol);
     this._eng.setListener(this._listener.position, this._listener.forward);
-    const files = this._opts.musicFiles ?? !offline;
+    // (the override files only ever exist on a developer's machine: a deployed site is not probed for them)
+    const files = this._opts.musicFiles ?? (!offline && typeof location !== 'undefined' && /^(localhost|127\.|\[::1\])/.test(location.hostname));
     const urlFor = this._opts.musicUrl || ((s) => new URL(`../assets/audio/${s}.mp3`, import.meta.url).href);
     this._dir = new MusicDirector(this._eng, { files, urlFor });
     if (this._opts.timer ?? !offline) this._timer = setInterval(() => this._tick(), TIMER_MS);

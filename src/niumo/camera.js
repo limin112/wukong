@@ -223,6 +223,8 @@ export class AutoCam {
     else if (boss) this.boss = boss;
     const P = monkey.pos;
     this.time += dt;
+    if (monkey.S > 1.5) return this.updateDuel(dt, monkey, boss);
+    if (this.duelOn) { this.duelOn = false; this.initialized = false; }
     if (!this.initialized) this.S.copy(P);
     this.S.x += (P.x - this.S.x) * damp(12, dt);
     this.S.z += (P.z - this.S.z) * damp(12, dt);
@@ -372,6 +374,76 @@ export class AutoCam {
   }
 
   /** The boss's own collision circles (a seated giant's hips, knees, feet, a hand on the ground) as camera bodies. */
+  /**
+   * 法相天地: two giants in the caldera. The camera stands well back behind the monkey's shoulder and high (about his
+   * chest), on the line from the bull through him (so W still walks at the bull and A / D circle him), looking at the
+   * space between their chests; it stays inside the caldera's walls and ignores everything that stands on its floor.
+   */
+  updateDuel(dt, monkey, boss) {
+    const P = monkey.pos, H = 1.5 * monkey.S, first = !this.duelOn || !this.initialized;
+    this.duelOn = true; this.initialized = true;
+    const bp = boss && !boss.dead && !boss.ghost ? boss.pos : null;
+    // locked on, the way a souls camera is: the lens is tied to him (his steps never leave it behind) and swings
+    // round him to keep the bull beyond his shoulder
+    this.lockTarget = bp ? monkey.lockTarget || null : null; this.focus = null; this.locked = !!this.lockTarget; this.lockPoint = null;
+    const S = this.S;
+    if (first) S.copy(P);
+    // rigid in plan: he never slides in the frame, however fast he runs (a damped follow lags by speed x frame time,
+    // which at 50 m/s shows every uneven frame as a jolt)
+    else { S.x = P.x; S.z = P.z; S.y += (P.y - S.y) * damp(8, dt); }
+    let d = this.duelD || 30;
+    if (bp) {
+      const hx = bp.x - S.x, hz = bp.z - S.z, dn = Math.hypot(hx, hz);
+      if (dn > H * 0.25) this.yawGoal = Math.atan2(hx, hz);
+      d = first ? dn : d + (dn - d) * damp(5, dt);
+    }
+    this.duelD = d;
+    this.yaw = first ? this.yawGoal : wrap(this.yaw + wrap(this.yawGoal - this.yaw) * damp(9, dt));
+    const fwd = this.forward(new THREE.Vector3()), rgt = this.right(new THREE.Vector3());
+    if (this.pullT > 0) this.pullT -= dt; else this.pullGoal = 0;
+    this.pull += (this.pullGoal - this.pull) * damp(this.pullGoal > this.pull ? 3 : 0.9, dt);
+    // well back and above his head, off his right shoulder: he stands in the lower left of the picture, the bull
+    // whole beyond him
+    const back = clamp(H * 1.5 + d * 0.25, H * 1.6, H * 2.3) + this.pull * 8;
+    const ox = -fwd.x * back + rgt.x * H * 0.85, oz = -fwd.z * back + rgt.z * H * 0.85;
+    // at this height the lens is above the caldera's rim: it may stand out over the walls (the floor is only 80 m
+    // across, two giants fill it), it only has to clear the rock under it
+    const pos = this.pos.set(S.x + ox, S.y + H * 0.95 + this.pull * 3, S.z + oz);
+    let top = -1e9;
+    for (let i = 0; i <= 4; i++) top = Math.max(top, this.ground(S.x + ox * (0.4 + i * 0.15), S.z + oz * (0.4 + i * 0.15)));
+    const lostWant = Math.max(0, top + 7 - pos.y);
+    this.duelLift = first ? lostWant : (this.duelLift || 0) + (lostWant - (this.duelLift || 0)) * damp(lostWant > (this.duelLift || 0) ? 8 : 2, dt);
+    const lost = this.duelLift;
+    pos.y += lost;
+    const look = (this.duelLook || (this.duelLook = new THREE.Vector3())).copy(S).addScaledVector(fwd, clamp(d * 0.55, H * 0.5, 60)); look.y = S.y + H * 0.7;
+    // against a wall the lens cannot stand back: whatever happens he stays in the picture (aim between him and that point)
+    {
+      const cx = S.x - pos.x, cz = S.z - pos.z, lx = look.x - pos.x, lz = look.z - pos.z;
+      const off = Math.abs(wrap(Math.atan2(cx, cz) - Math.atan2(lx, lz))), lim = this.fov * DEG * 0.5 * 1.25;      // (the horizontal half-angle is about 1.6x the vertical one)
+      if (off > lim) look.lerp(_v.set(S.x, look.y, S.z), clamp((off - lim) / Math.max(off, 1e-3) * 1.2, 0, 1));
+    }
+    const fovGoal = 56 + this.pull * 5;
+    this.fov = first ? fovGoal : this.fov + (fovGoal - this.fov) * damp(2.5, dt);
+    // kick spring + shake (at the giants' scale)
+    this.kickVel.addScaledVector(this.kick, -220 * dt);
+    this.kickVel.multiplyScalar(Math.exp(-16 * dt));
+    this.kick.addScaledVector(this.kickVel, dt);
+    this.trauma = Math.max(0, this.trauma - dt * 1.5);
+    const sh = this.trauma * this.trauma * this.shakeScale, t = this.time, cam = this.cam;
+    cam.position.copy(pos).addScaledVector(this.kick, this.shakeScale * 4);
+    cam.position.x += noise1(t, 1) * 1.1 * sh + noise1(t * 0.23, 7) * 0.05;
+    cam.position.y += noise1(t, 2) * 0.9 * sh + noise1(t * 0.19, 8) * 0.04;
+    cam.position.z += noise1(t, 3) * 1.1 * sh;
+    cam.lookAt(look);
+    cam.rotateZ(noise1(t, 4) * 0.03 * sh);
+    this.fovPunch = Math.max(0, this.fovPunch - dt * 18);
+    const fov = this.fov - this.fovPunch;
+    if (Math.abs(cam.fov - fov) > 0.01) { cam.fov = fov; cam.updateProjectionMatrix(); }
+    this.dist = back;
+    this.info.dist = back; this.info.fov = fov; this.info.focus = 'duel'; this.info.feasible = true;
+    return this.info;
+  }
+
   bossBodies() {
     const b = this.boss;
     if (!b || b.dead || !b.colliders) return null;

@@ -87,7 +87,7 @@ const bokeh = new BokehPass(scene, camera, { focus: 10, aperture: 0.002, maxblur
 bokeh.enabled = false;
 composer.addPass(bokeh);
 // restrained bloom: only lava cracks, eyes, sparks and the phase-two eruption are bright enough to reach it
-const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.55, 0.45, 0.9);
+const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.5, 0.5, 1.15);
 composer.addPass(bloom);
 // the grade (linear HDR, before ACES): split toning, warm/cool from the arena's hints, haze, heat shimmer, vignette,
 // hurt edge, flash, grain
@@ -159,13 +159,13 @@ async function loadAudio() {
 
 /**
  * The shared FX tuned for the caldera (on this instance only; fx.js is shared with the cathedral and stays as it is).
- * Its dust is a pale grey and its contact flash near white: here they read as bright puffs on black ground. Dust becomes
- * dark ash (the low part lit by the lava), the parry / block spark an ember-gold one with a small warm core, the
+ * Its dust is a pale grey and its contact flash near white. Dust becomes warm ash in the evening light (some of it
+ * catching the sun), the parry / block spark an ember-gold one with a small warm core, the
  * shockwave sits on the ground (the altar is not at y = 0) and burns dimmer.
  */
 function caldera(fx, arena) {
   const rand = (a, b) => a + Math.random() * (b - a);
-  const ash = new THREE.Color(0.08, 0.068, 0.06), ashLit = new THREE.Color(0.16, 0.08, 0.045);
+  const ash = new THREE.Color(0.25, 0.21, 0.18), ashLit = new THREE.Color(0.42, 0.27, 0.17);
   const gy = (x, z) => (arena.groundY ? arena.groundY(x, z) || 0 : 0);
   fx.dust = (pos, radius = 2, n = 40) => {
     const g = gy(pos.x, pos.z);
@@ -248,7 +248,7 @@ async function boot() {
     G.bot = new DemoBot(G);
     G.bot.debug = FLAG.debug;
     document.body.classList.add('demo');
-    const go = $('#splash .go'); if (go) go.textContent = '点 击 观 看 演 示';
+    const go = $('#splash .go'); if (go) go.textContent = '点 击 观 看 演 示'; const goe = $('#splash .goe'); if (goe) goe.textContent = 'Click to watch the demo';
     // the sound needs one gesture: any click or key lets it play
     const wake = () => { audio.context?.resume?.().catch?.(() => {}); };
     addEventListener('pointerdown', wake); addEventListener('keydown', wake);
@@ -293,6 +293,7 @@ async function boot() {
 
   function resetWorld({ retry = false } = {}) {
     const sp = retry ? fightStart() : arena.playerSpawn;
+    monkey.setGiant(1);
     monkey.reset(sp);
     if (monkey.mp !== undefined) monkey.mp = maxOf(monkey, 'Mp', 100);
     monkeyChar.root.visible = true; monkeyStaff.visible = true;
@@ -314,12 +315,16 @@ async function boot() {
     // (the cinematic's roar woke him already; a skipped 山崩 leaves him finishing his stand-up: never wake him out of it,
     // that would drop him back into phase one, seated, with the arena reverted)
     const rising = bull.state === 'transition';
-    if ((!fromCine || bull.state === 'dormant') && !rising) bull.wake?.();
+    if ((!fromCine || bull.state === 'dormant') && !rising && bull.state !== 'attack') bull.wake?.();
     G.setEyes(1);
     ui.showHUD(true); ui.showBoss(true); ui.letterbox(false); ui.setHint('');
     const p2 = bull.phase === 2 || rising, want = p2 ? 'niumo_phase2' : 'niumo_phase1';
     if (audio.musicState !== want) music(want, retry ? 1.5 : 0.3);
     arena.setPhase(p2 ? 2 : 1);
+    if (p2) {                       // 法相天地: phase two is fought at his scale
+      G.reachedP2 = true;
+      if (!monkey.giant) { monkey.setGiant(); monkey.reset({ x: monkey.pos.x, z: monkey.pos.z, yaw: monkey.yaw }); }
+    }
     if (!(fromCine && G.camPrimed)) camSnap();         // after the cinematic the auto camera is already on its frame
     G.camPrimed = false;
     if (!retry && !p2 && !fromCine) { G.flash = Math.max(G.flash, 0.25); cam.addTrauma?.(0.3); }
@@ -358,6 +363,7 @@ async function boot() {
   function beginEnding() {
     if (G.state === 'ending') return;
     setState('ending');
+    G.reachedP2 = false;            // (won: a retry from here is a new game, from the seat)
     ui.showHUD(false); ui.showBoss(false); ui.setHint('');
     G.cutKind = 'ending';
     G.cut = new EndingScene({ G, camera, bull, monkey, actor, audio, fx, arena, ui, music,
@@ -370,7 +376,7 @@ async function boot() {
     music('niumo_defeat', 0.3);
     G.slowmo = 0.4; G.slowmoT = 1.4;
     const id = G.deaths;
-    setTimeout(() => { if (G.state === 'dead' && G.deaths === id) ui.card_('火 未 熄', 'death', 4.2); }, 900);
+    setTimeout(() => { if (G.state === 'dead' && G.deaths === id) ui.card_('火 未 熄', 'death', 4.2, '<i>The fire still burns</i>'); }, 900);
     setTimeout(() => { if (G.state === 'dead' && G.deaths === id) $('#fade').classList.add('on'); }, 4600);
     setTimeout(() => {
       if (G.state !== 'dead' || G.deaths !== id) return;
@@ -384,6 +390,19 @@ async function boot() {
     G.cut?.dispose?.();
     G.cut = null; G.cutKind = null;
     resetWorld({ retry: true });
+    if (G.reachedP2) {
+      // he had already stood up: no prologue and no cinematic again — he is on his feet, the monkey at his scale
+      bull.wake?.({ opening: false });
+      bull.startTransition();
+      bull.events.length = 0;
+      for (let i = 0; i < 300 && bull.state === 'transition'; i++) bull.update(0.1, ghost);
+      bull.events.length = 0;
+      arena.setPhase(2, { instant: true });
+      const sp = safeSpot(arena, bull.pos.x + seatF.x * 34, bull.pos.z + seatF.z * 34);
+      monkey.setGiant();
+      monkey.reset({ x: sp.x, z: sp.z, yaw: Math.atan2(bull.pos.x - sp.x, bull.pos.z - sp.z) });
+      camSnap();
+    }
     setState('fight-wait'); G.waitT = 1.2;
     ui.showHUD(true); ui.showBoss(true); ui.setHint(''); ui.letterbox(false); ui.clearCard();
   }
@@ -392,12 +411,25 @@ async function boot() {
     for (const e of (monkey.events || []).splice(0)) {
       if (e.type === 'hit') {
         // the rod biting into a lava crack holds a beat longer and kicks the lens a little; rock just thuds
-        const weak = e.part && e.part !== 'body';
+        const weak = (e.part && e.part !== 'body') || monkey.giant;
         G.hitstop = Math.max(G.hitstop, (e.hitstop || 0.07) + (weak ? 0.02 : 0));
-        if (weak) { cam.zoomPunch?.(e.heavy ? 2.4 : 1.0); cam.addTrauma?.(e.heavy ? 0.12 : 0.05); G.aberr = Math.max(G.aberr, e.heavy ? 0.8 : 0.3); }
+        if (monkey.giant) {
+          // giant on giant: the blow hangs longer, the lens is shoved the way the rod went
+          G.hitstop = Math.max(G.hitstop, (e.hitstop || 0.07) * 1.25 + (e.heavy ? 0.05 : 0.02));
+          cam.punch?.(cam.forward(new THREE.Vector3()), e.heavy ? 0.55 : 0.22); cam.zoomPunch?.(e.heavy ? 3.5 : 1.4); cam.addTrauma?.(e.heavy ? 0.3 : 0.12);
+          G.aberr = Math.max(G.aberr, e.heavy ? 1 : 0.4); if (e.heavy) G.flash = Math.max(G.flash, 0.06);
+        } else if (weak) { cam.zoomPunch?.(e.heavy ? 2.4 : 1.0); cam.addTrauma?.(e.heavy ? 0.12 : 0.05); G.aberr = Math.max(G.aberr, e.heavy ? 0.8 : 0.3); }
         else if (e.heavy) G.aberr = Math.max(G.aberr, 0.5);
         input.rumble?.(e.heavy ? 0.8 : 0.4, 0.4, e.heavy ? 150 : 80);
+        // 呐喊: he shouts with the blows that matter (every heavy one, now and then a light one)
+        if (G.time - (G.shoutT || -9) > (e.heavy ? 0.9 : 2.6) && (e.heavy || Math.random() < 0.4)) {
+          G.shoutT = G.time;
+          const id = e.heavy ? (Math.random() < 0.5 ? 'y2' : 'y3') : (Math.random() < 0.5 ? 'y1' : 'y4');
+          G.voice?.shout(id, { gain: e.heavy ? 0.85 : 0.6, rate: (monkey.giant ? 0.9 : 1) * (0.96 + Math.random() * 0.1) });
+        }
+        if (bull.armored && G.time - (G.armorTipT || -9) > 4) { G.armorTipT = G.time; G.armorTip = 2.5; }
       }
+      if (e.type === 'fan' && e.armor) { G.hitstop = Math.max(G.hitstop, 0.14); G.slowmo = 0.4; G.slowmoT = 0.5; G.flash = Math.max(G.flash, 0.14); cam.addTrauma?.(0.4); }
       if (e.type === 'hurt') { G.hitstop = Math.max(G.hitstop, e.hitstop || 0.1); G.hurt = 1; G.aberr = Math.max(G.aberr, 0.6); G.heatKick = Math.max(G.heatKick || 0, 0.25); }
       if (e.type === 'block') { G.hitstop = Math.max(G.hitstop, e.hitstop || 0.06); G.aberr = Math.max(G.aberr, 0.3); }
       if (e.type === 'parry') { G.hitstop = Math.max(G.hitstop, 0.11); G.slowmo = 0.35; G.slowmoT = 0.35; G.flash = Math.max(G.flash, 0.2); G.aberr = 0.9; }
@@ -412,7 +444,10 @@ async function boot() {
         G.hitstop = Math.max(G.hitstop, 0.16); G.slowmo = 0.5; G.slowmoT = 0.4;
         G.flash = Math.max(G.flash, 0.1); G.aberr = Math.max(G.aberr, 0.8); G.heatKick = Math.max(G.heatKick || 0, 0.6);
       }
-      if (e.type === 'stagger') { G.slowmo = 0.45; G.slowmoT = 0.5; G.flash = Math.max(G.flash, 0.1); cam.addTrauma?.(0.35); }
+      if (e.type === 'stagger') { G.slowmo = e.reel ? 0.3 : 0.45; G.slowmoT = e.reel ? 0.7 : 0.5; G.flash = Math.max(G.flash, e.reel ? 0.16 : 0.1); cam.addTrauma?.(0.35); if (e.reel) { G.hitstop = Math.max(G.hitstop, 0.2); G.aberr = 1; input.rumble?.(1, 0.8, 300); } }
+      if (e.type === 'flinch') { G.hitstop = Math.max(G.hitstop, 0.16); G.aberr = Math.max(G.aberr, 0.8); cam.addTrauma?.(0.2); }
+      if (e.type === 'enrage') { ui.card_('牛魔王 · 现真身', 'name', 2.6, '烈 火 披 身 · 用 芭 蕉 扇 扇 灭 它<i>His true form: wreathed in fire — blow it out with the fan</i>'); if (monkey.mp !== undefined) monkey.mp = maxOf(monkey, 'Mp', 100);
+        G.slowmo = 0.5; G.slowmoT = 0.8; cam.pullBack?.(1, 3); cam.addTrauma?.(0.6); G.heatKick = Math.max(G.heatKick || 0, 0.8); }
       if (e.type === 'down') { G.slowmo = 0.5; G.slowmoT = 0.6; }
       // 'critical' { stage: 'open' } = his head is down (the hint shows); { stage: 'hit' } (or no stage) = 牵牛鼻子 lands
       if (e.type === 'critical' && e.stage !== 'open') { G.hitstop = Math.max(G.hitstop, 0.2); G.slowmo = 0.3; G.slowmoT = 0.7; G.flash = Math.max(G.flash, 0.18); }
@@ -571,6 +606,73 @@ async function boot() {
     return heatS;
   }
 
+  /**
+   * What the screen tells the player: the goal (under the bars), the answer to the blow that is coming or the opening
+   * it leaves (large, low in the middle), and the keys (along the bottom). Only in the fight.
+   */
+  const K = k => `<kbd>${k}</kbd>`;
+  // the English under every tip (matched by a phrase of the Chinese; first match wins)
+  const TIP_EN = [
+    ['横扫', `Sweep — hold ${K('L')} to guard`], ['破绽', `Opening! ${K('J')}`], ['连扫两下', `Two sweeps — keep ${K('L')} held`],
+    ['震地火浪', `Fire wave — ${K('Space')} through it as it reaches you`], ['火雨要来了', 'Fire rain coming — watch the red rings'],
+    ['火雨——跑出', `Fire rain — out of the red rings! He is roaring: hit him ${K('J')}`], ['冲撞', `Charge — ${K('Space')} to the side`],
+    ['他刹不住', `He cannot stop — run him down! ${K('J')}`], ['跳劈锤地', `Leaping smash — ${K('Space')} away, then run out`],
+    ['地面烧起来了', 'The ground is burning — get out of the ring!'], ['往旁边翻开', `Overhead smash — roll aside ${K('Space')}`],
+    ['砸棍', `Overhead smash — ${K('Space')} away`], ['敲他的铁棍', `Now — strike his staff! ${K('J')}`],
+    ['巨掌', 'Giant palm — out of the shadow on the ground'], ['手掌落地了', `The hand is down — strike it! ${K('J')}`],
+    ['架势崩了', `Posture broken — all out! ${K('J')} ${K('K')}`], ['他站不稳了', `He is staggered — all out! ${K('J')}`],
+    ['脚下是熔岩', `Lava underfoot — run out (or fan it out ${K('I')})`], ['火甲挡住了', `The fire armour holds — break it with the fan ${K('I')} (or a parry)`],
+  ];
+  function coach() {
+    if (G.state !== 'fight' || monkey.dead || bull.dead) { ui.setGoal(''); ui.setTip(''); ui.setKeys(''); return; }
+    const duel = monkey.giant, at = bull.state === 'attack' ? bull.atk : null, mv = bull.a?.move, t = mv ? mv.t : 0;
+    ui.setKeys(duel ? `WASD 绕着他跑（始终锁定）　${K('J')} 出棍　${K('K')} 重击（按住蓄力）　${K('L')} 格挡　${K('空格')} 闪步　${K('I')} 芭蕉扇<i>WASD circle him (always locked) · J strike · K heavy (hold to charge) · L guard · Space step · I fan</i>`
+      : `WASD 移动　${K('J')} 出棍　${K('K')} 重击　${K('L')} 格挡　${K('空格')} 翻滚<i>WASD move · J strike · K heavy · L guard · Space roll</i>`);
+    if (bull.phase === 1 && bull.state !== 'transition') {
+      const n = bull.T.preludeHits || 6;
+      ui.setGoal(`敲他！棍子打中他 ${n} 下，逼他站起来<b>${Math.min(bull.preludeHits || 0, n)} / ${n}</b><i>Strike him ${n} times with the staff to make him stand</i>`);
+    } else if (duel) ui.setGoal(!bull.enraged ? '法相天地　·　打倒牛魔王<i>Stand as Heaven and Earth · bring the Bull Demon King down</i>' : bull.armored ? `牛魔王现了真身 · 火甲护体（伤害大减）——用芭蕉扇 ${K('I')} 扇灭<i>His true form: fire armour (damage much reduced) — blow it out with the fan ${K('I')}</i>` : '火甲灭了 · 趁现在猛攻<i>The fire is out · all out, now</i>');
+    else ui.setGoal('');
+    let tip = '', kind = '';
+    if (at && mv) {
+      const def = at.def, hit = def.hits && def.hits[0];
+      if (at.name === 'sweep2' || at.name === 'sweep') {
+        if (t < hit[1]) { tip = `横扫——按住 ${K('L')} 格挡`; kind = 'danger'; }
+        else { tip = `破绽！${K('J')} 连击`; kind = 'go'; }
+      } else if (at.name === 'combo2') {
+        if (t < def.hits[1][1]) { tip = `连扫两下——按住 ${K('L')} 别松`; kind = 'danger'; }
+        else { tip = `破绽！${K('J')} 连击`; kind = 'go'; }
+      } else if (duel && (at.name === 'stompL' || at.name === 'stompR')) {
+        if (t < def.impactAt + 1.6) { tip = `震地火浪——火浪到跟前时 ${K('空格')} 穿过去`; kind = 'danger'; }
+        else { tip = `破绽！${K('J')} 连击`; kind = 'go'; }
+      } else if (duel && at.name === 'meteor') {
+        tip = t < def.rain[0] ? '火雨要来了——盯住地上的红圈' : `火雨——跑出红圈！他在吼，趁机打他 ${K('J')}`; kind = 'danger';
+      } else if (at.name === 'charge') {
+        if (t < def.runEnd && !at.stopped) { tip = `冲撞——${K('空格')} 往旁边闪`; kind = 'danger'; }
+        else { tip = `他刹不住——追上去打！${K('J')}`; kind = 'go'; }
+      } else if (at.name === 'quake') {
+        if (!at.fired.has('impact')) { tip = `跳劈锤地——${K('空格')} 闪开，落地后往外跑`; kind = 'danger'; }
+        else { tip = '地面烧起来了——跑出火圈！'; kind = 'danger'; }
+      } else if (at.name === 'slam2') {
+        if (!at.fired.has('impact')) { tip = `砸棍——${K('空格')} 闪开`; kind = 'danger'; }
+        else { tip = `破绽！${K('J')} 连击`; kind = 'go'; }
+      } else if (at.name === 'slam') {
+        if (!at.fired.has('impact')) { tip = `砸棍——${K('空格')} 往旁边翻开`; kind = 'danger'; }
+        else if (at.resting || t < (def.restAt ?? 2.6) + 1) { tip = `趁现在，敲他的铁棍！${K('J')}`; kind = 'go'; }
+      } else if (at.name === 'palmL' || at.name === 'palmR') {
+        if (t < def.impactAt) { tip = '巨掌——跑出地上的影子'; kind = 'danger'; }
+        else if (t < def.restEnd) { tip = `手掌落地了，敲它！${K('J')}`; kind = 'go'; }
+      }
+    } else if (bull.state === 'stagger') { tip = bull.reeling ? `架势崩了——猛攻！${K('J')} ${K('K')}` : bull.duel ? '' : `他站不稳了——猛攻！${K('J')}`; kind = 'go'; }
+    if (duel) {
+      const inFire = (bull.groundFires || []).some(f => !f.out && f.r > 12 && Math.hypot(monkey.pos.x - f.x, monkey.pos.z - f.z) < f.r * 0.9);
+      if (inFire) { tip = `脚下是熔岩——快跑出去（或 ${K('I')} 芭蕉扇 扇灭）`; kind = 'danger'; }
+      else if (G.armorTip > 0 && bull.armored && kind !== 'danger') { tip = `火甲挡住了——${K('I')} 芭蕉扇 破防（弹反也行）`; kind = 'danger'; }
+    }
+    if (tip) { const en = TIP_EN.find(([key]) => tip.includes(key)); if (en) tip += `<i>${en[1]}</i>`; }
+    ui.setTip(tip, kind);
+  }
+
   function frame() {
     requestAnimationFrame(frame);
     const t0 = performance.now();
@@ -593,6 +695,7 @@ async function boot() {
     G.time += dt;
 
     if (G.slowmoT > 0) { G.slowmoT -= dt; if (G.slowmoT <= 0) G.slowmo = 1; }
+    if (G.armorTip > 0) G.armorTip -= dt;
     const gdt = dt * G.slowmo;
     let adt = gdt;
     if (G.hitstop > 0) { G.hitstop -= dt; adt = 0; }
@@ -618,6 +721,7 @@ async function boot() {
       case 'transition':
       case 'ending':
         G.bot?.setActive(false);
+        coach();
         if (G.cut) G.cut.update(gdt);
         if (G.state === 'transition' || G.state === 'ending') drainEvents();
         break;
@@ -648,6 +752,7 @@ async function boot() {
     eyes?.update(dt, G.time);
     updateLooks(camera);
     fx.update(gdt);
+    arena.setDuelScale?.(!!monkey.giant);       // the giants fight in the widened caldera (it changes on the cut into the duel)
     arena.update(dt, G.time, camera);
     camera.getWorldDirection(listenerFwd);
     audio.setListener({ position: camera.position, forward: listenerFwd });
@@ -659,12 +764,14 @@ async function boot() {
 
     ui.setPlayer(monkey.hp, hpMax, monkey.st, maxOf(monkey, 'St', 100), monkey.mp ?? 0, maxOf(monkey, 'Mp', 100));
     ui.setBoss(bull.hp, bull.maxHp);
-    const lt = G.state === 'fight' && !bull.dead ? (cam.lockTarget?.pos || G.nearestWeakPoint()?.pos || null) : null;
+    const lt = G.state !== 'fight' || bull.dead ? null : monkey.giant ? monkey.lockTarget?.pos || null : (cam.lockTarget?.pos || G.nearestWeakPoint()?.pos || null);
+    ui.setPosture(G.state === 'fight' && bull.duel && !bull.dead ? bull.posture : -1, bull.reeling);
     ui.setReticle(lt, camera, renderer);
     if (G.state === 'fight') {
       const open = !!bull.criticalOpen?.(monkey) && !monkey.dead;
       if (open !== G.critHint) { G.critHint = open; ui.setHint(open ? 'J · 牵牛鼻子' : ''); }
     }
+    coach();
     ui.update(dt);
 
     // grade: ease toward the arena's hints for its current phase; cutscenes may push heat / warmth on top

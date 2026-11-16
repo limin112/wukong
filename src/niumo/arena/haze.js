@@ -8,6 +8,7 @@
 // Everything takes its colours from the shared VOLCANO fog / glow uniforms, so phase changes follow on their own.
 import * as THREE from 'three';
 import { VOLCANO } from './shared.js';
+import { SUN } from './sky.js';
 import { rng, fbm } from './noise.js';
 
 const BEAM_VS = /* glsl */`
@@ -57,6 +58,7 @@ const SMOKE_VS = /* glsl */`
   }`;
 const SMOKE_FS = /* glsl */`
   uniform sampler2D uNoise; uniform float uTime; uniform vec3 uFog; uniform vec3 uGlow; uniform float uK;
+  uniform vec3 uSunDir; uniform vec3 uSun;
   varying vec2 vUv; varying float vSeed; varying float vFar; varying vec3 vW;
   float fbm2(vec2 p) { return texture2D(uNoise, p).r * 0.55 + texture2D(uNoise, p * 2.1 + 0.3).g * 0.3 + texture2D(uNoise, p * 4.3 + 0.7).b * 0.15; }
   void main() {
@@ -68,9 +70,15 @@ const SMOKE_FS = /* glsl */`
     float a = edge * smoothstep(0.0, 0.08, vUv.y) * (1.0 - smoothstep(0.55, 1.0, vUv.y + (n - 0.5) * 0.3));
     a *= smoothstep(0.25, 0.6, n * 0.7 + n2 * 0.5);
     // dark smoke, red-lit from the crater at its foot, fading into the fog with distance
-    vec3 c = vec3(0.012, 0.010, 0.009) * (0.6 + 0.8 * n2);
+    vec3 c = vec3(0.05, 0.042, 0.048) * (0.6 + 0.8 * n2);
     c += uGlow * exp(-vUv.y * 6.0) * (0.6 + 0.6 * n);
-    c = mix(c, uFog * 1.4, vFar);
+    c = mix(c, uFog * 1.1, vFar);
+    // the low sun: the flank that faces it glows, the thin edges burn when it stands behind the column
+    vec3 vd = normalize(vW - cameraPosition);
+    float mu = max(dot(vd, uSunDir), 0.0);
+    vec3 sideV = normalize(cross(vec3(0.0, 1.0, 0.0), vd));
+    float facing = clamp(x * sign(dot(sideV, uSunDir)) * 0.7 + 0.35, 0.0, 1.0);
+    c += uSun * (0.16 * facing * (0.5 + 0.5 * n2) + a * (1.0 - a) * 4.0 * (1.6 * pow(mu, 8.0) + 0.12));
     gl_FragColor = vec4(c, a * uK * (0.92 - vFar * 0.35));
     #include <tonemapping_fragment>
     #include <colorspace_fragment>
@@ -129,7 +137,8 @@ function buildRidges(noiseSeed = 5) {
       const big = fbm(u, v, 3, L.seed);
       const sharp = 1 - Math.abs(fbm(u * 3.1, v * 3.1, 3, L.seed + 1) * 2 - 1);
       const behind = Math.exp(-((Math.atan2(Math.sin(a - 0.32), Math.cos(a - 0.32)) / 0.32) ** 2));
-      const h = Math.max(6, L.h + (big - 0.5) * 2 * L.var + sharp * L.var * 0.45) * (1 - 0.55 * behind);
+      const sunGap = Math.exp(-((Math.atan2(Math.sin(a - SUN.az), Math.cos(a - SUN.az)) / 0.3) ** 2));   // and under the sun
+      const h = Math.max(6, L.h + (big - 0.5) * 2 * L.var + sharp * L.var * 0.45) * (1 - 0.55 * behind) * (1 - 0.6 * sunGap);
       const r = L.r * (1 + (fbm(u * 0.7, v * 0.7, 2, L.seed + 5) - 0.5) * 0.25);
       pos.push(cx * r, -25, cz * r - 10, cx * r, h, cz * r - 10);
       top.push(0, 1); lay.push(li / 2, li / 2);
@@ -204,7 +213,8 @@ export function createHaze({ noise, quality = 'high' } = {}) {
   const aCol = new Float32Array(cols.length * 4);
   const smokeMat = new THREE.ShaderMaterial({
     name: 'volcano-smoke-columns', vertexShader: SMOKE_VS, fragmentShader: SMOKE_FS,
-    uniforms: { uNoise: { value: noise }, uTime: { value: 0 }, uFog: { value: new THREE.Color() }, uGlow: { value: new THREE.Color() }, uK: { value: 1 } },
+    uniforms: { uNoise: { value: noise }, uTime: { value: 0 }, uFog: { value: new THREE.Color() }, uGlow: { value: new THREE.Color() }, uK: { value: 1 },
+      uSunDir: VOLCANO.vSunDir, uSun: { value: new THREE.Color() } },
     transparent: true, depthWrite: false, side: THREE.DoubleSide, fog: false,
   });
   const smokeMesh = new THREE.InstancedMesh(smokeGeo, smokeMat, cols.length);
@@ -250,6 +260,7 @@ export function createHaze({ noise, quality = 'high' } = {}) {
       smokeMat.uniforms.uFog.value.copy(VOLCANO.vFogCol.value);
       smokeMat.uniforms.uGlow.value.copy(VOLCANO.vFogGlowCol.value).multiplyScalar(1.4);
       smokeMat.uniforms.uK.value = 1 - rain * 0.85;
+      smokeMat.uniforms.uSun.value.copy(VOLCANO.vSunCol.value);
       ridgeMat.uniforms.uTime.value = time;
       ridgeMat.uniforms.uFog.value.copy(VOLCANO.vFogCol.value);
       ridgeMat.uniforms.uGlow.value.copy(VOLCANO.vFogGlowCol.value);

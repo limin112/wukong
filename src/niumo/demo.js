@@ -96,7 +96,7 @@ export class DemoBot {
   solid(x, z, r = 0.5) {
     for (const c of this.arena.colliders || []) if (hyp(x - c.x, z - c.z) < c.r + r) return true;
     const b = this.bull;
-    if (b && !b.dead && b.colliders) for (const c of b.colliders() || []) if (c.r > 0 && hyp(x - c.x, z - c.z) < c.r + r) return true;
+    if (b && !b.dead && b.colliders) for (const c of b.colliders() || []) if (c.r > 0 && !c.staff && hyp(x - c.x, z - c.z) < c.r + r) return true;       // (the staff on the stone is what he walks up to and hits)
     return false;
   }
   /** Ground the monkey can stand on: no lava (with a margin), not in a body, inside the field. */
@@ -410,6 +410,17 @@ export class DemoBot {
       if ((this.blocked?.[part] || 0) > this.time) pri -= 8;      // could not get there a moment ago
       cands.push({ part, zone: z, pri, w });
     }
+    // the prologue: his staff lying where the opening blow left it (every blow on it counts toward getting him up)
+    const sz = zone('staff');
+    if (b.phase === 1 && sz && sz.r > 0) {
+      // (the staff is thirty metres long: work on the stretch of it nearest to him, not on its far end)
+      const ax = sz.b.x - sz.a.x, az = sz.b.z - sz.a.z, L = hyp(ax, az) || 1;
+      const u = clamp(((P.x - sz.a.x) * ax + (P.z - sz.a.z) * az) / (L * L), 0.12, 0.92), h = 1.5 / L;
+      const at = k => sz.a.clone().lerp(sz.b, clamp(u + k * h, 0, 1));
+      const near = { part: 'staff', a: at(-1), b: at(1), r: sz.r };
+      const d = hyp(near.b.x - P.x, near.b.z - P.z);
+      cands.push({ part: 'staff', zone: near, pri: 9 - d * 0.1 + (this.target && this.target.part === 'staff' ? 1.5 : 0) - ((this.blocked?.staff || 0) > this.time ? 8 : 0), w: null });
+    }
     cands.sort((p, q) => q.pri - p.pri);
     return cands[0] || null;
   }
@@ -506,6 +517,8 @@ export class DemoBot {
     if (!M.dead) this.deadNoted = false;
     if (M.dead || b.dead || M.state === 'held') { this.releaseAll(); return; }
 
+    if (M.giant) { this.duel(dt); return; }      // 法相天地: a different, simpler fight
+
     this.perceive(dt);
     const free = M.canAct() || M.inCancelWindow();
 
@@ -561,6 +574,67 @@ export class DemoBot {
     if (this.lava(M.pos.x, M.pos.z) > 0.3) { this.leaveLava(dt, free); return; }
     // 5. what to do now
     this.choose(dt, free);
+  }
+
+  /**
+   * The duel of the giants: walk up to him, hit him; guard his sweep (the rod raised toward him just before it lands),
+   * step out from under his overhead blow.
+   */
+  duel(dt) {
+    const M = this.monkey, b = this.bull;
+    const dx = b.pos.x - M.pos.x, dz = b.pos.z - M.pos.z, d = hyp(dx, dz) || 1;
+    const at = b.state === 'attack' ? b.atk : null, mv = b.a && b.a.move, t = mv ? mv.t : 0;
+    const free = M.canAct() || M.inCancelWindow();
+    this.run = false;
+    const dodge = (x, z, why, key) => {
+      if (this.duelRolled === key || !(free || M.state === 'attack') || M.st <= 2) return false;
+      this.duelRolled = key;
+      if (this.duelGuard) { this.duelGuard = false; this.release('block'); }
+      this.aim(x, z, 1); this.G.input.release('roll'); this.press('roll'); this.stats.rolls++; this.lastRoll = this.time;      // (released first: two steps in a row are two presses)
+      this.note(why);
+      return true;
+    };
+    // what the ground and the sky are doing (they outlive the blow that made them)
+    for (const h of b.hazards || []) {
+      if (h.duel && h.hitSet && h.t > 0.3 && !h.hitSet.has('wave')) {           // 震地's ring of fire: step through it as it arrives
+        const cr = hyp(M.pos.x - h.c.x, M.pos.z - h.c.z), gap = cr - h.r;
+        if (gap > -4 && gap < 13 && dodge(dx / d, dz / d, 'step through the wave', h)) return;
+      } else if (h.k > 1 && h.target && !h.done) {                  // 火雨: out of the ring that is about to land
+        const mx = M.pos.x - h.target.x, mz = M.pos.z - h.target.z, md = hyp(mx, mz) || 1, left = h.dur - h.t;
+        if (md < 4.2 * h.k + 4 && left < 1.3) {
+          if (left < 0.5 && dodge(mx / md, mz / md, 'step out of the fire', h)) return;
+          if (this.duelGuard) { this.duelGuard = false; this.release('block'); }
+          this.aim(mx / md, mz / md, 1); return;
+        }
+      }
+    }
+    if (at && mv && (at.name === 'sweep2' || at.name === 'combo2')) {
+      const hs = at.def.hits;
+      if (t > hs[0][0] - 0.4 && t < hs[hs.length - 1][1] + 0.05) {
+        if (!this.duelGuard) { this.duelGuard = true; this.stats.parries++; this.note('guard ' + at.name); }
+        this.aim(dx / d, dz / d, 0.12); this.hold('block');
+        return;
+      }
+    }
+    if (this.duelGuard) { this.duelGuard = false; this.release('block'); }
+    if (at && mv && (at.name === 'slam2' || at.name === 'quake') && !at.fired.has('impact') && t > at.def.impactAt - 0.34 && dodge(-dz / d, dx / d, 'step out of slam2', at)) return;
+    if (at && mv && (at.name === 'stompL' || at.name === 'stompR') && !at.fired.has('impact') && d < 26 && t > at.def.impactAt - 0.5 && dodge(-dx / d, -dz / d, 'step back from the hoof', at)) return;
+    if (at && mv && at.name === 'charge' && t >= at.def.runAt - 0.1 && !at.stopped && !at.hit.has('c') && (d - 17) / 56 < 0.3 && dodge(-dz / d, dx / d, 'step out of the charge', at)) return;
+    // 锤地's burning ground: out of it, away from its middle (and the fan, if it is to hand, puts it out)
+    for (const f of b.groundFires || []) {
+      if (f.out || f.r < 12) continue;
+      const fx = M.pos.x - f.x, fz = M.pos.z - f.z, fd = hyp(fx, fz) || 1;
+      if (fd < f.r * 0.95) { this.aim(fx / fd, fz / fd, 1); this.note('out of the burning ground'); return; }
+    }
+    // 现真身: the fire he wears is blown out with the fan before the rod goes back to work
+    if (b.armored && free && M.mp >= M.T.fanCost && d < 60 && this.time - (this.lastFan || -9) > 1.5) {
+      this.lastFan = this.time; this.aim(dx / d, dz / d, 0.12); this.press('fan'); this.stats.fans++; this.note('fan: blow his fire out'); return;
+    }
+    if (d > 25) { this.aim(dx / d, dz / d, 1); return; }
+    this.aim(dx / d, dz / d, 0.12);
+    if (free && M.st > 16 && this.time - this.lastPress > 0.34) {
+      this.press('light'); this.release('light'); this.stats.lights++; this.lastPress = this.time;
+    }
   }
 
   goCrit(dt, free) {
@@ -642,6 +716,7 @@ export class DemoBot {
   }
 
   validTarget(T) {
+    if (T.part === 'staff') return this.bull.phase === 1 && T.zone.r > 0;
     const w = this.bull.weak?.[T.part];
     if (!w || !w.active) return false;
     if (T.part.startsWith('hand') && !w.resting) return false;
@@ -762,7 +837,7 @@ export class DemoBot {
   /** A straight walk from (x0, z0) to (x1, z1) crosses no lava / pillar? */
   clearLine(x0, z0, x1, z1) {
     const L = hyp(x1 - x0, z1 - z0), n = Math.ceil(L / 0.5);
-    const b = this.bull, body = b && !b.dead && b.colliders ? (b.colliders() || []).filter(c => c.r > 0) : [];
+    const b = this.bull, body = b && !b.dead && b.colliders ? (b.colliders() || []).filter(c => c.r > 0 && !c.staff) : [];
     for (let i = 1; i <= n; i++) {
       const f = i / n, x = x0 + (x1 - x0) * f, z = z0 + (z1 - z0) * f;
       if (this.lava(x, z) > 0.2) return false;
@@ -786,7 +861,7 @@ export class DemoBot {
       const D = N.dist; D.fill(-1);
       // his feet / knees / hands on the ground block the way as well (they move: taken at the time of the search)
       const b = this.bull, body = [];
-      if (b && !b.dead && b.colliders) for (const c of b.colliders() || []) if (c.r > 0) body.push({ x: c.x, z: c.z, rr: (c.r + 0.5) ** 2 });
+      if (b && !b.dead && b.colliders) for (const c of b.colliders() || []) if (c.r > 0 && !c.staff) body.push({ x: c.x, z: c.z, rr: (c.r + 0.5) ** 2 });
       const q = new Int32Array(N.nx * N.nz); let h = 0, t = 0;
       D[gk] = 0; q[t++] = gk;
       while (h < t) {

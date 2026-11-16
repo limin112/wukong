@@ -42,16 +42,20 @@ export const MONKEY_TUNING = {
   height: 1.5, radius: 0.32,
   maxHp: 100, maxSt: 100, maxMp: 100,
   walkSpeed: 1.7, runSpeed: 4.3, sprintSpeed: 6.7, sprintCost: 12,
-  stRegen: 50, stDelay: 0.5, stDelayEmpty: 1.0,
+  stRegen: 70, stDelay: 0.35, stDelayEmpty: 0.8,
   mpRegen: 2.5, mpPerHit: 5, mpPerParry: 12, fanCost: 34,
   baseDmg: 20, critMult: 20,     // execution: 400
-  parryWindow: 0.2,           // s after pressing L in which a blow is parried
+  parryWindow: 0.3,           // s after pressing L in which a blow is parried
   comboGrace: 0.3,            // s after a combo hit ends in which J still continues the string
   staffRadius: 0.1,           // hit radius around the rod (m)
   lockRange: 18, critRange: 9,
   fanRange: 13, fanAngle: 34 * DEG,
   lavaDps: 32,
   stepUp: 0.45, vaultMax: 2.2, gravity: 24,
+  // 法相天地: his size in phase two (times his own 1.5 m: a little smaller than the standing bull), how fast a giant
+  // walks / runs / sprints (m/s), how far his moves carry him and how high they lift him (times the size), the pace of
+  // his moves, and the level he stands on (he wades through whatever is on the floor)
+  giant: 20, giantWalk: 14, giantRun: 40, giantBack: 50, giantSprint: 56, giantStep: 0.3, giantLift: 0.5, giantPace: 0.85, giantStaff: 1.3,
 };
 
 // ------------------------------------------------------------------ sound: niumo names first, cathedral stand-ins
@@ -299,19 +303,129 @@ if (!LOOK_PRESETS.niumoStaff) {
 }
 
 if (!LOOK_PRESETS.niumoMonkey) {
-  // tarnished gold mail and old bronze, read by a cool sky rim against the dark and a low warm key (the lava)
+  // tarnished gold mail, old bronze and the gold mask under the evening sky: a warm rim from the low sun, and a key of
+  // his own strong enough to read him inside the giant's shadow
   LOOK_PRESETS.niumoMonkey = {
-    rim: [0.5, 0.55, 0.68], rimK: 0.45, rimPow: 2.7, self: [0, 0, 0], selfK: 0,
+    rim: [1.0, 0.76, 0.5], rimK: 0.6, rimPow: 2.7, self: [0, 0, 0], selfK: 0,
     metal: [0.2, 0.62], steelK: 0.45, steelSat: [0.17, 0.1], steelLum: [0.2, 0.12], goldK: 0.9,
     rough: [0.85, 0.06], steelRough: 0.48, goldRough: 0.4, plain: [0.04, 1.05], steel: [0.36, 0.35, 0.34],
-    wet: [-20, 0.1, 0], key: 0.62, keyCol: [1.0, 0.8, 0.62], env: 1.15, normal: 1.0, height: 1.5,
+    wet: [-20, 0.1, 0], key: 1.25, keyCol: [1.0, 0.86, 0.7], env: 1.25, normal: 1.0, height: 1.5,
   };
 }
 
 /** The monkey's look: the black-and-gold preset (the crimson cape is in the model's own texture). Idempotent. */
 export function dressMonkey(char) {
   const model = char && (char.model || char.root);
-  if (model && !model.userData.look) applyLook(model, 'niumoMonkey');
+  if (model && !model.userData.look) { applyLook(model, 'niumoMonkey'); polishMask(model); }
+}
+
+/** Which way the bind pose faces (the generated rigs are not all exported facing +Z): from the foot to the toe. */
+function bindForward(mesh) {
+  const sk = mesh.skeleton, names = sk.bones.map(b => b.name.replace(/^mixamorig:?/, ''));
+  const at = n => { const i = names.indexOf(n); return i < 0 ? null : new THREE.Vector3().setFromMatrixPosition(new THREE.Matrix4().copy(sk.boneInverses[i]).invert()); };
+  const a = at('LeftFoot'), b = at('LeftToeBase');
+  const f = a && b ? b.sub(a).setY(0) : new THREE.Vector3(0, 0, 1);
+  return f.lengthSq() > 1e-10 ? f.normalize() : new THREE.Vector3(0, 0, 1);
+}
+
+/** Where the mask's eye openings sit, in head heights (Head -> HeadTop_End) from the head joint: [across, up]; and their size. */
+export const MASK_EYES = { x: 0.078, y: 0.21, w: 0.046, h: 0.021, tilt: 0.2, iris: 0.0115 };
+
+/**
+ * 火眼金睛. The model's mask has no eyes (two shut creases): cut him eye openings - a dark almond laid on the surface,
+ * found by casting a ray at the bind-pose face - and put a coal in each: a small ember-gold iris that the bloom turns
+ * into a glint. They ride the head bone.
+ */
+function addMaskEyes(mesh, headBone, hi, ti) {
+  const E = MASK_EYES, sk = mesh.skeleton;
+  const bindOf = i => new THREE.Vector3().setFromMatrixPosition(new THREE.Matrix4().copy(sk.boneInverses[i]).invert());
+  const hp = bindOf(hi), size = ti >= 0 ? bindOf(ti).distanceTo(hp) : 0.2;
+  const F = bindForward(mesh), R = new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), F).normalize();
+  const still = new THREE.Mesh(mesh.geometry, new THREE.MeshBasicMaterial({ side: THREE.DoubleSide }));
+  still.matrixAutoUpdate = false; still.matrix.copy(mesh.bindMatrix); still.matrixWorld.copy(mesh.bindMatrix);
+  const ray = new THREE.Raycaster();
+  const group = new THREE.Group(); group.name = 'mask-eyes'; group.matrixAutoUpdate = false;
+  group.matrix.copy(sk.boneInverses[hi]);            // children are placed in bind space
+  const dark = new THREE.MeshBasicMaterial({ color: 0x050302, transparent: true, opacity: 0.96, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4 });
+  const fire = new THREE.MeshBasicMaterial({ color: new THREE.Color(2.6, 0.95, 0.16), toneMapped: false });
+  const core = new THREE.MeshBasicMaterial({ color: 0x120804 });
+  for (const sgn of [-1, 1]) {
+    const from = hp.clone().addScaledVector(R, sgn * E.x * size).addScaledVector(F, size * 3); from.y += E.y * size;
+    ray.set(from, F.clone().negate());
+    const hit = ray.intersectObject(still, false)[0];
+    if (!hit) continue;
+    const n = hit.face ? hit.face.normal.clone().transformDirection(mesh.bindMatrix) : F.clone();
+    if (n.dot(F) < 0) n.negate();
+    n.lerp(F.clone().addScaledVector(R, sgn * 0.25), 0.6).normalize();
+    const eye = new THREE.Group();
+    eye.position.copy(hit.point).addScaledVector(n, size * 0.012);
+    eye.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), n).normalize(), new THREE.Vector3().crossVectors(n, new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), n).normalize()), n));
+    const socket = new THREE.Mesh(new THREE.CircleGeometry(1, 28), dark);
+    socket.scale.set(E.w * size, E.h * size, 1); socket.rotation.z = -sgn * E.tilt; socket.renderOrder = 2;
+    const iris = new THREE.Mesh(new THREE.CircleGeometry(E.iris * size, 20), fire);
+    iris.position.z = size * 0.004; iris.renderOrder = 3; iris.material.depthWrite = false;
+    const pupil = new THREE.Mesh(new THREE.CircleGeometry(E.iris * size * 0.42, 14), core);
+    pupil.position.z = size * 0.008; pupil.renderOrder = 4;
+    eye.add(socket, iris, pupil);
+    group.add(eye);
+  }
+  headBone.add(group);
+  return group;
+}
+
+/**
+ * The gold mask. The generated model paints its face gold with the light baked in, which reads as a painted face, not
+ * as metal. Mark the front of the head (vertices skinned to the head bone, forward of it) and render what is gold
+ * there as real polished gold: full metal, smooth, one even colour that takes its light and shade from the sky it
+ * mirrors instead of from the paint. Hair, ears, eye sockets and neck keep the model's own surface.
+ */
+export function polishMask(model) {
+  const meshes = [];
+  model.traverse(o => { if (o.isSkinnedMesh) meshes.push(o); });
+  for (const mesh of meshes) {
+    const g = mesh.geometry, si = g.attributes.skinIndex, sw = g.attributes.skinWeight, pos = g.attributes.position;
+    if (!si || !sw || g.attributes.lkMask) continue;
+    const bones = mesh.skeleton.bones, names = bones.map(b => b.name.replace(/^mixamorig:?/, ''));
+    const hi = names.indexOf('Head'), ti = names.indexOf('HeadTop_End'), ni = names.indexOf('Neck');
+    const mask = new Float32Array(pos.count);
+    if (hi >= 0) {
+      const bind = i => new THREE.Vector3().setFromMatrixPosition(new THREE.Matrix4().copy(mesh.skeleton.boneInverses[i]).invert());
+      const hp = bind(hi), size = ti >= 0 ? bind(ti).distanceTo(hp) : ni >= 0 ? bind(ni).distanceTo(hp) * 2 : 0.2;
+      const headish = new Set([hi, ti].filter(i => i >= 0));
+      const F = bindForward(mesh);
+      const p = new THREE.Vector3(), ss = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+      for (let v = 0; v < pos.count; v++) {
+        let w = 0;
+        for (let k = 0; k < 4; k++) if (headish.has(si.getComponent(v, k))) w += sw.getComponent(v, k);
+        if (w < 0.5) continue;
+        p.fromBufferAttribute(pos, v).applyMatrix4(mesh.bindMatrix).sub(hp);
+        mask[v] = ss(0.02, 0.22, p.dot(F) / size) * ss(-0.25, 0.0, p.y / size) * ss(0.5, 0.8, w);
+      }
+    }
+    g.setAttribute('lkMask', new THREE.BufferAttribute(mask, 1));
+    if (hi >= 0 && !bones[hi].getObjectByName('mask-eyes')) addMaskEyes(mesh, bones[hi], hi, ti >= 0 ? ti : -1);
+    for (const m of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) {
+      if (!m || m.userData.maskPolished) continue;
+      m.userData.maskPolished = true;
+      const prev = m.onBeforeCompile;
+      m.onBeforeCompile = (shader, r) => {
+        prev?.(shader, r);
+        shader.vertexShader = 'attribute float lkMask;\nvarying float vLkMask;\n' + shader.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\n  vLkMask = lkMask;');
+        const end = 'roughnessFactor = mix( roughnessFactor, min( roughnessFactor, 0.15 ), lkWk );\n  }';
+        shader.fragmentShader = 'varying float vLkMask;\n' + shader.fragmentShader.replace(end, end + `
+  {
+    float mkM = vLkMask * smoothstep( 0.08, 0.35, lkGoldM );
+    float mkL = clamp( dot( diffuseColor.rgb, vec3( 0.3, 0.6, 0.1 ) ), 0.0, 1.0 );
+    vec3 mkGold = vec3( 1.0, 0.74, 0.32 ) * ( 0.5 + 0.34 * smoothstep( 0.12, 0.6, mkL ) );
+    diffuseColor.rgb = mix( diffuseColor.rgb, mkGold, mkM );
+    metalnessFactor = mix( metalnessFactor, 1.0, mkM );
+    roughnessFactor = mix( roughnessFactor, 0.42 + 0.1 * lkNoise( lkWP * 140.0 / max( lkHeight, 0.1 ) ), mkM );
+  }`);
+      };
+      m.customProgramCacheKey = () => 'look-v1-mask';
+      m.needsUpdate = true;
+    }
+  }
 }
 
 /**
@@ -474,6 +588,8 @@ export class Monkey {
     this.twist = 0; this.sprintW = 0; this.sprintingNow = false;
     this.collideBoss = true;
     this.lavaDamage = true;
+    this.S = 1;                 // size: 1, or T.giant in 法相天地
+    this.T0 = { ...this.T };
     this.seg = { butt: new THREE.Vector3(), tip: new THREE.Vector3(), pbutt: new THREE.Vector3(), ptip: new THREE.Vector3(), valid: false };
     this.lastX = this.root.position.x; this.lastZ = this.root.position.z;
     this.boss = null;
@@ -483,6 +599,36 @@ export class Monkey {
   get maxHp() { return this.T.maxHp; }
   get maxSt() { return this.T.maxSt; }
   get maxMp() { return this.T.maxMp; }
+
+  // ------------------------------------------------------------------ 法相天地
+
+  /**
+   * His size: 1 (the 1.5 m monkey) or any multiple of it (T.giant in phase two; the cinematic grows him through the
+   * values in between). A giant keeps every move he has, carried further and a little slower; his rod grows with him;
+   * he walks on the level of the lake and nothing on the floor (pillars, steles, lava, ledges) stops or burns him —
+   * only the walls of the caldera and the bull do.
+   */
+  setGiant(size = this.T0.giant) {
+    const S = Math.max(1, size || 1), T0 = this.T0, rig = this.a.rig, k = S / this.S;
+    this.root.scale.setScalar(S);
+    for (const side of ['Left', 'Right']) { rig.armLen[side] *= k; rig.legLen[side] *= k; }
+    rig.hipsRestY *= k; rig.h *= k;
+    const g = S > 1;
+    this.T = { ...T0, radius: T0.radius * S, staffRadius: T0.staffRadius * (g ? S * T0.giantStaff : 1), lockRange: T0.lockRange * S, fanRange: T0.fanRange * S,
+      walkSpeed: g ? THREE.MathUtils.lerp(T0.walkSpeed, T0.giantWalk, (S - 1) / (T0.giant - 1)) : T0.walkSpeed,
+      runSpeed: g ? THREE.MathUtils.lerp(T0.runSpeed, T0.giantRun, (S - 1) / (T0.giant - 1)) : T0.runSpeed,
+      sprintSpeed: g ? THREE.MathUtils.lerp(T0.sprintSpeed, T0.giantSprint, (S - 1) / (T0.giant - 1)) : T0.sprintSpeed };
+    this.S = S;
+    if (g) { this.airborne = false; this.vy = 0; this.vault = null; this.thrown = null; this.throwVel = null; if (this.fan) this.fan.visible = false; }
+    this.sizeStaff();
+    this.seg.valid = false;
+    this.root.updateMatrixWorld(true);
+  }
+  get giant() { return this.S > 1.001; }
+  /** The level a giant stands on: the lake's (he wades through the floor's plates and seams alike). */
+  giantY() { return this.arena.lavaY ?? 0; }
+  /** The rod at his size (and the finisher's stretch). */
+  sizeStaff(grow = 1) { if (this.staff) this.staff.scale.set(this.S, grow * this.S, this.S); }
 
   // ------------------------------------------------------------------ helpers
 
@@ -499,7 +645,11 @@ export class Monkey {
     const mv = this.a.move;
     return !!(mv && mv.def.iframes && mv.t >= mv.def.iframes[0] && mv.t <= mv.def.iframes[1]);
   }
-  spend(n) { this.st -= n; this.stDelay = this.st <= 0 ? this.T.stDelayEmpty : this.T.stDelay; }
+  /** (a giant's blows and steps cost a little less) */
+  spend(n) {
+    this.st -= this.giant ? n * 0.75 : n;
+    this.stDelay = this.st <= 0 ? this.T.stDelayEmpty : this.T.stDelay;
+  }
 
   /** World-space wish direction from WASD relative to the camera, magnitude 0..1. */
   wishDir(out) {
@@ -512,9 +662,9 @@ export class Monkey {
   }
 
   startMove(name, opts = {}) {
-    const mv = this.a.startMove(name, opts);
+    const mv = this.a.startMove(name, this.giant && opts.speed === undefined ? { ...opts, speed: this.T.giantPace } : opts);
     this.state = ATTACKS.has(name) ? 'attack' : name === 'backflip' ? 'roll' : name;
-    mv.landed = new Set();
+    mv.landed = new Set(); this.moveYaw = null;
     if (ATTACKS.has(name)) this.stepIn(mv);
     return mv;
   }
@@ -529,11 +679,11 @@ export class Monkey {
     const zone = (boss.hurtZones() || []).find(z => z.part === lt.part);
     const root = (mv.def.moveRoot || []).reduce((s, r) => s + Math.max(0, r[2]), 0);
     if (!zone || root <= 0) return;
-    const lo = _a.set(this.pos.x, this.pos.y + 0.4, this.pos.z), hi = _b.set(this.pos.x, this.pos.y + 2.0, this.pos.z);
+    const S = this.S, lo = _a.set(this.pos.x, this.pos.y + 0.4 * S, this.pos.z), hi = _b.set(this.pos.x, this.pos.y + 2.0 * S, this.pos.z);
     const res = segSeg(lo, hi, zone.a, zone.b, _c1, _c2);
     const toT = Math.atan2(_c2.x - this.pos.x, _c2.z - this.pos.z);
     if (Math.abs(wrap(toT - this.yaw)) > 0.6) return;
-    const extra = clamp(res.dist - zone.r - 1.1 - root, 0, 1.2);
+    const extra = this.giant ? 0 : clamp(res.dist - zone.r - 1.1 - root, 0, 1.2);
     if (extra > 0) mv.rootScale = (root + extra) / root;
   }
 
@@ -543,6 +693,13 @@ export class Monkey {
   pickLock(boss) {
     if (!boss || boss.dead || boss.dormant || boss.ghost || !boss.lockTargets) { this.lockTarget = null; return; }
     const list = boss.lockTargets() || [];
+    if (this.giant) {          // 法相天地: no weak points to look for, the bull himself
+      const t = list.find(q => q.part === 'body');
+      if (!t) { this.lockTarget = null; return; }
+      this._lock.part = 'body'; this._lock.pos.copy(t.pos);
+      this.lockTarget = this._lock;
+      return;
+    }
     let best = null, bd = Infinity, cur = null, cd = Infinity;
     for (const t of list) {
       if (t.part === 'body' || t.enabled === false || t.open === false) continue;
@@ -564,7 +721,7 @@ export class Monkey {
     if (lt) {
       const d = Math.hypot(lt.pos.x - this.pos.x, lt.pos.z - this.pos.z);
       const toT = Math.atan2(lt.pos.x - this.pos.x, lt.pos.z - this.pos.z);
-      if (d < 14 && d > 0.3) {
+      if (d < 14 * this.S && d > 0.3) {
         if (want === null) { if (Math.abs(wrap(toT - this.yaw)) < maxAngle) want = toT; }
         else if (Math.abs(wrap(toT - want)) < 0.9) want = toT;
       }
@@ -581,7 +738,7 @@ export class Monkey {
 
   /** True when J now would be 牵牛鼻子 (his head is down and the ring is within a dash). */
   canExecute(boss) {
-    if (!boss || boss.dead || this.dead || !boss.criticalOpen || !boss.criticalOpen(this)) return false;
+    if (this.giant || !boss || boss.dead || this.dead || !boss.criticalOpen || !boss.criticalOpen(this)) return false;
     const r = this.ringPoint(boss);
     return !!r && Math.hypot(r.x - this.pos.x, r.z - this.pos.z) < this.T.critRange;
   }
@@ -593,16 +750,26 @@ export class Monkey {
     if (this.dead || this.airborne || this.state === 'held') return;
     const free = this.canAct();
     const cancel = this.inCancelWindow() && ['attack', 'roll', 'hurt', 'blockHit', 'parry', 'fan', 'land', 'vault'].includes(this.state);
-    if (!free && !cancel) return;
+    const dodgeNow = this.giant && this.state === 'attack' && inp.peek('roll', 0.3) && this.st > 0;      // (a giant may always step out)
+    if (!free && !cancel && !dodgeNow) return;
     const mvName = this.a.move ? this.a.move.name : null;
 
     if (inp.peek('roll', 0.3) && this.st > 0) {
       inp.take('roll', 0.3);
       const m = this.wishDir(_v);
-      if (m > 0.2) this.yaw = Math.atan2(_v.x, _v.z);
-      const name = m > 0.2 ? 'roll' : 'backflip';
+      let name = m > 0.2 ? 'roll' : 'backflip', stepYaw = null;
+      const lt = this.lockTarget;
+      if (this.giant && lt) {
+        // 法相天地, locked on: a real tumble the way the keys point - he turns into it, goes over his shoulder and
+        // comes up turning back to the bull; straight back (or with no key held) it is the back flip, still facing him
+        const face = Math.atan2(lt.pos.x - this.pos.x, lt.pos.z - this.pos.z);
+        const want = m > 0.2 ? Math.atan2(_v.x, _v.z) : face + Math.PI;
+        if (Math.abs(wrap(want - face)) > 2.36) { name = 'backflip'; this.yaw = face; }
+        else { name = 'roll'; this.yaw = want; }
+      } else if (m > 0.2) this.yaw = Math.atan2(_v.x, _v.z);
       this.spend(MONKEY[name].stamina);
       this.startMove(name);
+      this.state = 'roll'; this.moveYaw = stepYaw;
       this.charge = 0;
       this.sfx(['monkey_roll', 'roll_ash', 'swing_light'], { pos: this.pos, volume: 0.45, pitch: 0.62 });
       this.fx.dust?.(this.pos, 0.6, 8);
@@ -615,7 +782,7 @@ export class Monkey {
       return;
     }
     // J out of a full run: the leaping smash
-    if (inp.peek('light', 0.35) && free && this.state === 'move' && this.sprintingNow && this.speed > 5.2 && this.st > 0) {
+    if (inp.peek('light', 0.35) && free && this.state === 'move' && this.sprintingNow && this.speed > (this.giant ? this.T.sprintSpeed * 0.8 : 5.2) && this.st > 0) {
       inp.take('light', 0.35);
       this.faceTarget(Math.PI * 0.5);
       this.spend(MONKEY.runAttack.stamina);
@@ -703,10 +870,12 @@ export class Monkey {
       if (this.hp <= 0) { this.hp = Math.max(this.hp, 0.5); }      // he dies on the stone, not in the fist
       return true;
     }
-    const toward = Math.atan2(from.x - this.pos.x, from.z - this.pos.z);
+    // (法相天地: he is locked on the bull, and what he guards against is the bull - wherever along the staff it lands)
+    const src = this.giant && this.boss && this.boss.pos ? this.boss.pos : from;
+    const toward = Math.atan2(src.x - this.pos.x, src.z - this.pos.z);
     // a blow that comes down on him from above (a giant's staff passing over his head: the contact point sits on top of
     // him, its horizontal direction is noise) meets the raised rod whichever way he faces
-    const overhead = Math.hypot(from.x - this.pos.x, from.z - this.pos.z) < 0.8 && from.y > this.pos.y + 0.9;
+    const overhead = Math.hypot(from.x - this.pos.x, from.z - this.pos.z) < 0.8 * this.S && from.y > this.pos.y + 0.9 * this.S;
     const facing = overhead || Math.abs(wrap(toward - this.yaw)) < 1.4;
     if (blockable && facing) {
       if (this.time - this.parryT <= this.T.parryWindow) return this.parry(dmg, from);
@@ -735,7 +904,7 @@ export class Monkey {
     this.charge = 0; this.blocking = false;
     if (this.hp <= 0) { this.die(from); return; }
     this.yaw = Math.atan2(-dir.x, -dir.z);
-    this.startMove(light ? 'hurt' : 'knockdown');
+    this.startMove(light || this.giant ? 'hurt' : 'knockdown');      // (a giant staggers, he is not thrown)
   }
 
   parry(dmg, from) {
@@ -759,7 +928,7 @@ export class Monkey {
     const T = this.T;
     const dir = new THREE.Vector3(this.pos.x - from.x, 0, this.pos.z - from.z).normalize();
     const spark = this.seg.butt.clone().lerp(this.seg.tip, 0.5);
-    this.st -= dmg * 1.7; this.stDelay = T.stDelay * 1.4;
+    this.st -= dmg * (this.giant ? 1.2 : 1.7); this.stDelay = T.stDelay * 1.4;
     this.a.jolt(dir, 0.1, 0.014);
     this.fx.hitSpark?.(spark, dir.clone().negate(), false);
     this.sfx(['block'], { pos: spark, pitch: 0.9 + Math.random() * 0.1 });
@@ -840,7 +1009,7 @@ export class Monkey {
     this.time += dt;
     // teleported (reset, cutscene): stand on the ground where he is now
     if (Math.hypot(this.pos.x - this.lastX, this.pos.z - this.lastZ) > 1.5 && this.state !== 'held') {
-      this.baseY = this.ground(this.pos.x, this.pos.z); this.airborne = false; this.vy = 0; this.seg.valid = false;
+      this.baseY = this.giant ? this.giantY() : this.ground(this.pos.x, this.pos.z); this.airborne = false; this.vy = 0; this.seg.valid = false;
     }
     this.pickLock(boss);
     if (this.state !== 'held') this.tryActions(boss);
@@ -872,6 +1041,8 @@ export class Monkey {
   updateGuard(dt) {
     const inp = this.input, a = this.a;
     const mvName = a.move ? a.move.name : null;
+    // 法相天地 is the simple fight: the guard (like the dodge) answers at once, out of any blow of his own
+    if (this.giant && this.state === 'attack' && !this.dead && (inp.isHeld('block') || inp.peek('block', 0.25))) { a.stopMove(); this.state = 'idle'; this.charge = 0; }
     const canGuard = this.canAct() || mvName === 'blockHit' || mvName === 'parry';
     if (canGuard && inp.peek('block', 0.25)) {
       inp.take('block', 0.25);
@@ -899,8 +1070,9 @@ export class Monkey {
       const u0 = clamp((ta - t0) / (t1 - t0), 0, 1), u1 = clamp((tb - t0) / (t1 - t0), 0, 1);
       if (u0 === u1) continue;
       const f = ease[e || 'out'];
-      const step = dist * (f(u1) - f(u0)) * scale;
-      this.pos.x += Math.sin(this.yaw) * step; this.pos.z += Math.cos(this.yaw) * step;
+      const step = dist * (f(u1) - f(u0)) * scale * (this.giant ? this.S * this.T.giantStep : 1);
+      const y = this.moveYaw ?? this.yaw;
+      this.pos.x += Math.sin(y) * step; this.pos.z += Math.cos(y) * step;
     }
   }
 
@@ -925,7 +1097,7 @@ export class Monkey {
       const wish = this.wishDir(_v), wishYaw = Math.atan2(_v.x, _v.z);
       const toLock = lt ? Math.atan2(lt.pos.x - this.pos.x, lt.pos.z - this.pos.z) : 0;
       const overridden = wish > 0.2 && lt && Math.abs(wrap(toLock - wishYaw)) > 0.9;
-      if (lt && !overridden && Math.hypot(lt.pos.x - this.pos.x, lt.pos.z - this.pos.z) < 14) {
+      if (lt && !overridden && Math.hypot(lt.pos.x - this.pos.x, lt.pos.z - this.pos.z) < 14 * this.S) {
         this.yaw = yawLerp(this.yaw, toLock, def.track[2] * DEG * dt);
       } else if (wish > 0.2) this.yaw = yawLerp(this.yaw, wishYaw, def.track[2] * (overridden ? 1 : 0.5) * DEG * dt);
     }
@@ -940,7 +1112,7 @@ export class Monkey {
     }
     if (def.lift) {
       const [l0, l1, h] = def.lift, u = clamp((t - l0) / (l1 - l0), 0, 1);
-      this.liftY = h * 4 * u * (1 - u);
+      this.liftY = h * 4 * u * (1 - u) * (this.giant ? this.S * this.T.giantLift : 1);
     }
   }
 
@@ -998,18 +1170,21 @@ export class Monkey {
     const wish = this.wishDir(_v);
     const sprint = wish > 0.3 && this.input.sprinting() && this.st > 0 && !this.blocking;
     this.sprintingNow = sprint;
-    let target = wish < 0.05 ? 0 : wish < 0.6 ? T.walkSpeed : T.runSpeed;
+    let target = wish < 0.05 ? 0 : wish < 0.6 && !this.giant ? T.walkSpeed : T.runSpeed;
     if (this.blocking) target = Math.min(target, T.walkSpeed * 0.8);
+    if (this.giant && this.backpedal && target > 0 && !this.blocking) target = this.T0.giantBack;       // (backing off a giant's blow is the fastest he moves)
     if (sprint) { target = T.sprintSpeed; this.st -= T.sprintCost * dt; this.stDelay = T.stDelay; }
     this.speed += (target - this.speed) * damp(target > this.speed ? 10 : 14, dt);
     let twist = 0;
     this.backpedal = false;
     const lt = this.lockTarget;
+    // (a giant is locked on: standing still he turns back to the bull too - after a tumble, when the bull circles him)
+    if (this.giant && lt && wish <= 0.05) this.yaw = yawLerp(this.yaw, Math.atan2(lt.pos.x - this.pos.x, lt.pos.z - this.pos.z), 12 * dt);
     if (wish > 0.05) {
       const want = Math.atan2(_v.x, _v.z);
-      if (this.blocking && lt) {
-        // guarding: keep the rod toward the target and side-step
-        this.yaw = yawLerp(this.yaw, Math.atan2(lt.pos.x - this.pos.x, lt.pos.z - this.pos.z), 9 * dt);
+      if ((this.blocking || this.giant) && lt) {       // (a giant stays locked even at a sprint)
+        // guarding (and a giant, always: he is locked on the bull): keep the rod toward the target and side-step
+        this.yaw = yawLerp(this.yaw, Math.atan2(lt.pos.x - this.pos.x, lt.pos.z - this.pos.z), 12 * dt);
         const rel = wrap(want - this.yaw);
         if (Math.abs(rel) > 1.95) { this.backpedal = true; twist = rel - Math.sign(rel) * Math.PI; }
         else twist = clamp(rel, -1.05, 1.05);
@@ -1033,15 +1208,31 @@ export class Monkey {
 
   updateLocomotionAnim() {
     const a = this.a;
-    if (this.speed < 0.15) { a.playBase('idle', { fade: 0.25 }); return; }
-    const useRun = this.speed > 2.6 && !this.backpedal;
+    if (this.speed < 0.15 * this.S) { a.playBase('idle', { fade: 0.25 }); return; }
+    // (a giant runs whichever way he goes - sideways, backwards - with his face to the bull)
+    const useRun = this.giant ? this.speed > this.T.runSpeed * 0.6 : this.speed > 2.6 && !this.backpedal;
     const name = useRun && a.actions.run ? 'run' : 'walk';
     const natural = a.clipSpeed(name) || (useRun ? 4 : 1.2);
     a.playBase(name, { fade: 0.22 });
-    a.setBaseTimeScale(clamp(this.speed / natural, 0.55, 1.7) * (this.backpedal ? -1 : 1));
+    // a giant's legs keep a runner's cadence (his strides are not twenty times longer: the ground slides a little)
+    const rate = this.giant ? clamp(this.speed / this.T.runSpeed, 0.6, 1.3) * (useRun ? 1 : 1.3) : clamp(this.speed / (natural * this.S), 0.55, 1.7);
+    a.setBaseTimeScale(rate * (this.backpedal ? -1 : 1));
   }
 
   footsteps(dt) {
+    if (this.giant) {       // a giant's tread: the ground answers
+      if (this.speed < 2) { this.footAcc = 0; return; }
+      // (by the clock, not the distance: at a run he covers 50 m a second, and a footfall every 11 m shook the lens
+      // four times a second - it read as dropped frames)
+      this.footAcc += dt;
+      if (this.footAcc < 0.36) return;
+      this.footAcc -= 0.36; this.footSide ^= 1;
+      const foot = this.a.bonePos(this.footSide ? 'LeftFoot' : 'RightFoot', new THREE.Vector3());
+      foot.y = this.ground(foot.x, foot.z);
+      this.fx.dust?.(foot, 3.5, 16);
+      this.sfx(['bull_stomp', 'boss_step'], { pos: foot, volume: 0.4, pitch: 1.25 });
+      return;
+    }
     if (this.speed < 0.4) { this.footAcc = 0; return; }
     const stride = this.speed > 2.6 ? 1.05 : 0.7;
     this.footAcc += this.speed * dt;
@@ -1066,6 +1257,7 @@ export class Monkey {
   vertical(dt, x0, z0) {
     const T = this.T, a = this.a;
     if (this.state === 'held') return;
+    if (this.giant) { this.baseY += (this.giantY() - this.baseY) * damp(8, dt); this.airborne = false; this.vault = null; return; }
     if (this.vault) {
       const v = this.vault;
       v.t += dt;
@@ -1119,7 +1311,7 @@ export class Monkey {
 
   hazards(dt) {
     const T = this.T;
-    if (!this.lavaDamage || !this.arena.lavaAt || this.airborne || this.liftY > 0.25) return;
+    if (this.giant || !this.lavaDamage || !this.arena.lavaAt || this.airborne || this.liftY > 0.25) return;
     const lv = this.arena.lavaAt(this.pos.x, this.pos.z) || 0;
     if (lv <= 0.5 || this.invulnerable()) { this.burnT = 0; return; }
     const k = (lv - 0.5) * 2;
@@ -1141,7 +1333,10 @@ export class Monkey {
   /** Pillars and steles (arena), the giant's limbs (his hurt zones as solid capsules). */
   collide(boss) {
     const T = this.T;
-    if (this.arena.bounds) clampToArena(this.pos, this.arena, T.radius);
+    if (this.giant && this.arena.bounds) {       // only the walls of the caldera hold a giant
+      const b = this.arena.duelBounds || this.arena.bounds, r = T.radius * 0.6;
+      this.pos.x = clamp(this.pos.x, b.minX + r, b.maxX - r); this.pos.z = clamp(this.pos.z, b.minZ + r, b.maxZ - r);
+    } else if (this.arena.bounds) clampToArena(this.pos, this.arena, T.radius);
     if (!this.collideBoss || !boss || boss.dead) return;
     if (boss.colliders) {
       for (const c of boss.colliders() || []) {
@@ -1154,7 +1349,7 @@ export class Monkey {
     if (!boss.hurtZones) return;
     const zones = boss.hurtZones();
     if (!zones) return;
-    const lo = _a.set(this.pos.x, this.pos.y + 0.25, this.pos.z), hi = _b.set(this.pos.x, this.pos.y + 1.35, this.pos.z);
+    const lo = _a.set(this.pos.x, this.pos.y + 0.25 * this.S, this.pos.z), hi = _b.set(this.pos.x, this.pos.y + 1.35 * this.S, this.pos.z);
     for (const z of zones) {
       const res = segSeg(lo, hi, z.a, z.b, _c1, _c2);
       const min = z.r + T.radius;
@@ -1195,6 +1390,13 @@ export class Monkey {
   }
 
   afterActor(dt, boss, mv) {
+    // a tumble turns him about his hips, and with the tuck that put his head and back under the floor for a few
+    // frames (a giant vanished into the lake): carry the whole body up so that nothing of his trunk goes below it
+    if (mv && (mv.name === 'roll' || mv.name === 'backflip') && this.a.char.pivot) {
+      const pv = this.a.char.pivot, floor = this.pos.y + 0.16 * this.S;
+      const low = Math.min(this.a.bonePos('Hips', _a).y, this.a.bonePos('Head', _b).y, this.a.bonePos('Spine2', _c1).y);
+      if (low < floor) { pv.position.y += (floor - low) / this.S; pv.updateMatrixWorld(true); }
+    }
     this.updateStaff(mv);
     this.leftHand();
     this.updateFan();
@@ -1215,7 +1417,7 @@ export class Monkey {
     const grow = clamp(this.staffVal('grow', 1), 0.5, 2.5);
     ud.gripFrac = slide;
     if (ud.inner) ud.inner.position.y = ud.baseY - (slide - ud.baseGf) * ud.length;
-    s.scale.set(1, grow, 1);
+    s.scale.set(this.S, grow * this.S, this.S);
     // rolls and falls: the rod turns with the body
     const pose = a.lastPose;
     if (mv && mv.def.pivotBlade && pose && pose.pblade && a.move) {
@@ -1233,7 +1435,7 @@ export class Monkey {
       s.position.copy(a.grip);
     }
     s.updateMatrixWorld(true);
-    const seg = this.seg, L = ud.length * grow, dir = a.bladeDir, g = a.grip;
+    const seg = this.seg, L = ud.length * grow * this.S, dir = a.bladeDir, g = a.grip;
     seg.pbutt.copy(seg.butt); seg.ptip.copy(seg.tip);
     seg.butt.copy(g).addScaledVector(dir, -L * slide);
     seg.tip.copy(g).addScaledVector(dir, L * (1 - slide));
@@ -1281,7 +1483,7 @@ export class Monkey {
     _m.makeBasis(x, y, z);
     fan.quaternion.setFromRotationMatrix(_m);
     fan.position.copy(hand).lerp(mid, 0.75);
-    fan.scale.setScalar(ease.out(v));
+    fan.scale.setScalar(ease.out(v) * (this.giant ? this.S : 1));
     fan.visible = true;
   }
 
@@ -1387,8 +1589,8 @@ export class Monkey {
   releaseFan(boss) {
     const T = this.T;
     const dir = new THREE.Vector3(Math.sin(this.yaw), Math.sin(8 * DEG), Math.cos(this.yaw)).normalize();
-    const origin = new THREE.Vector3(this.pos.x, this.pos.y + 1.0, this.pos.z).addScaledVector(dir, 0.3);
-    const range = T.fanRange, angle = T.fanAngle;
+    const origin = new THREE.Vector3(this.pos.x, this.pos.y + 1.0 * this.S, this.pos.z).addScaledVector(dir, 0.3 * this.S);
+    const range = this.giant ? T.fanRange * 0.45 : T.fanRange, angle = T.fanAngle * (this.giant ? 1.25 : 1);
     const parts = [];
     let result = null;
     if (boss && !boss.dead && boss.hurtZones) {
@@ -1406,9 +1608,17 @@ export class Monkey {
     }
     this.arena.fanGust?.(origin.clone(), dir.clone(), range, angle);
     this.windFx(origin, dir, range, angle);
+    if (this.giant && this.fx.alpha) {        // a giant's gust: a wall of pale ash thrown across the caldera
+      const side = new THREE.Vector3(-dir.z, 0, dir.x), pale = new THREE.Color(0.66, 0.64, 0.6);
+      for (let i = 0; i < 46; i++) {
+        const a = (Math.random() * 2 - 1) * angle, v = dir.clone().multiplyScalar(Math.cos(a)).addScaledVector(side, Math.sin(a));
+        this.fx.alpha.emit(origin.clone().addScaledVector(v, 4 + Math.random() * 18).add(new THREE.Vector3(0, (Math.random() - 0.5) * 16, 0)), v.multiplyScalar(70 + Math.random() * 60),
+          pale, { size: 5 + Math.random() * 9, life: 0.5 + Math.random() * 0.5, drag: 1.2, grav: 0, alpha: 0.28, grow: 1.6 });
+      }
+    }
     this.sfx(['fan_wind', 'swing_heavy'], { pos: origin, pitch: 0.55, volume: 1 });
     this.cam.addTrauma?.(0.22); this.cam.zoomPunch?.(2);
-    this.events.push({ type: 'fan', origin: origin.clone(), dir: dir.clone(), range, angle, parts, reflected: !!result?.reflected, extinguished: result?.extinguished || 0, exposed: result?.exposed || [] });
+    this.events.push({ type: 'fan', origin: origin.clone(), dir: dir.clone(), range, angle, parts, reflected: !!result?.reflected, armor: !!result?.armor, extinguished: result?.extinguished || 0, exposed: result?.exposed || [] });
   }
 
   windFx(origin, dir, range, angle) {
@@ -1503,7 +1713,7 @@ export class Monkey {
     this.dead = false; this.state = 'idle';
     a.stopMove(); a.playBase('idle', { fade: 0 });
     a.extra = null; a.extraW = 0;
-    const g = this.ground(spawn.x, spawn.z);
+    const g = this.giant ? this.giantY() : this.ground(spawn.x, spawn.z);
     this.baseY = g; this.liftY = 0; this.spinOff = 0;
     this.airborne = false; this.vy = 0; this.thrown = null; this.throwVel = null; this.vault = null;
     this.heldBy = null; this.ringPos = null; this.ringW = 0; this.critStand = null; this.grabPending = 0;
@@ -1518,7 +1728,7 @@ export class Monkey {
     this.seg.valid = false;
     this.lastX = spawn.x; this.lastZ = spawn.z;
     this.fan.visible = false;
-    if (this.staff) { this.staff.scale.set(1, 1, 1); for (const m of this.staff.userData.goldMats || []) m.emissiveIntensity = 0; }
+    if (this.staff) { this.sizeStaff(); for (const m of this.staff.userData.goldMats || []) m.emissiveIntensity = 0; }
     this.root.updateMatrixWorld(true);
   }
 }

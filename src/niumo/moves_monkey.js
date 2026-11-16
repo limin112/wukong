@@ -203,6 +203,25 @@ export const MONKEY = {
       k(0.62, { ease: 'inOut', ...G, pivot: { pitch: 360 }, ...LEGS_FREE, pblade: [-0.14, 0.45, 0.88] }),
     ],
   },
+  // 法相天地: a giant does not tumble. A quick step (闪步) in any direction, low and leaning into it, the rod still
+  // toward the enemy: x = to his right (+) / left (-), z = forward (+) / back (-). monkey.js picks the variant.
+  ...Object.fromEntries([['dodgeF', 0, 1], ['dodgeB', 0, -1], ['dodgeL', -1, 0], ['dodgeR', 1, 0]].map(([name, x, z]) => {
+    const lead = { at: [x * 0.3, -0.58, 0.05 + z * 0.3], pole: [x * 0.3, 0, 1] }, trail = { at: [-x * 0.62, -0.7, -z * 0.6 - 0.02], pole: [-x * 0.2, 0, 1] };
+    const leftLeads = x < 0 || (x === 0 && z > 0);
+    return [name, {
+      iframes: [0.02, 0.4], cancel: 0.44, moveRoot: [[0.0, 0.36, 2.7, 'out']], stamina: 14, blendIn: 0.04, blendOut: 0.14, step: [x, z],
+      keys: [
+        k(0, G),
+        k(0.1, { ease: 'out', hips: [x * 0.1, -0.3, z * 0.08], spine: [14 + z * 12, 0, -x * 18], head: [2 - z * 8, 0, x * 8],
+          armR: { at: [0.3, -0.5, 0.42], pole: [0.6, -0.5, -0.3] }, armL: { at: [-0.34, -0.5, 0.3], pole: [-0.6, -0.5, -0.3] }, blade: [-0.3 - x * 0.2, 0.5, 0.8],
+          legL: leftLeads ? lead : trail, legR: leftLeads ? trail : lead }),
+        k(0.3, { ease: 'linear', hips: [x * 0.06, -0.26, z * 0.05], spine: [12 + z * 8, 0, -x * 12] }),
+        k(0.44, { ease: 'out', hips: [0, -0.16, 0.02], spine: [10, 0, 0], head: [2, 0, 0],
+          legL: { at: [-0.12, -0.8, 0.06], pole: [0, 0, 1] }, legR: { at: [0.12, -0.8, -0.06], pole: [0, 0, 1] } }),
+        k(0.62, { ease: 'inOut', ...G, hips: [0, 0, 0], ...LEGS_FREE }),
+      ],
+    }];
+  })),
   // no direction held: a back handspring away from the enemy
   backflip: {
     iframes: [0.04, 0.36], cancel: 0.5, moveRoot: [[0.0, 0.46, -3.0, 'out']], lift: [0.04, 0.42, 0.55], stamina: 16,

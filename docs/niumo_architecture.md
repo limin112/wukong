@@ -70,7 +70,7 @@ export class BullKing {
 
 - 招式与弱点按 `docs/niumo_design.md`：一阶段盘坐（横扫、砸棍、拍掌、吐火、抓），二阶段站起（踏地、角扫、火雨、掷棍）。
 - 每招都有清楚的预兆（光、声、地面提示）；打玩家用 `player.takeHit({ dmg, from, kind, blockable })`。
-- 弱点：双手背、双膝的熔岩裂口各有血量，打碎两个他就俯身低头，`criticalOpen` 为 true，执行「牵牛鼻子」处决。
+- 序幕（坐姿）：棍子打中 `preludeHits` 下就发 `phase2` 事件起身，不再有坐姿的处决。主战（站姿）的弱点是两条小腿下段到蹄子的熔岩裂口，各有血量；两处都打碎他就跪倒，`criticalOpen` 为 true，执行「牵牛鼻子」处决。站姿时蹄子由 `groundFeet()` 放平并贴在地面上。
 - 事件：`damage`、`stagger`、`phase2`（开始山崩过场）、`dead`、`critical`。
 
 ## 3. 主角 `src/niumo/monkey.js` + `input.js` + `camera.js`
@@ -97,7 +97,10 @@ export class AutoCam { /* 只用键盘：自动框住猴子和牛魔王正在出
 
 ## 5. 主程序 `index.html` + `src/niumo/main.js`
 
-- 流程：splash（点击开始）→ 一整段开场过场（MV、走到膝下、标题、睁眼、六句对白、长啸，镜头直接落到战斗机位）→ fight → transition（山崩过场 + 两句对白）→ fight 二阶段 → ending（下雨，「大哥……下雨了。」）；死亡 → 直接重来，不再播过场。
+- 流程：splash（点击开始）→ 一整段开场过场（「一棒问山」：走来、顿棍、标题、睁眼、六句对白、长啸、他一棍砸下而悟空闪开，镜头直接落到战斗机位）→ fight 序幕（坐姿，敲 6 下）→ transition（山崩过场 + 两句对白）→ fight 主战（站姿）→ ending（下雨，「大哥……下雨了。」）；死亡 → 直接重来，不再播过场。
+- 法相天地：`monkey.setGiant(size)`（1 = 1.5 米，默认 `MONKEY_TUNING.giant` = 20 倍；棍子、步幅、判定同比放大，无视地形）、`monkey.giant`、`monkey.S`；牛魔王在二阶段看到 `player.S > 1.5` 就进入对决（`bull.duel`：招式是 `DUEL_ATTACKS`——`sweep2` / `combo2` / `slam2` / `stompL|R`（`LavaWave` 的对决尺度）/ `meteor`（`Meteor` 放大 3 倍）/ `charge`（`tickCharge`）；任何部位都吃全额伤害；`bull.flinch()` 是僵直（`hit2`），`bull.stagger()` 在对决里是架势崩（`reel`，`bull.reeling`、`bull.posture` 0..1），`bull.enraged` 是暴怒；命中特效 `bfx.giantHit`）；悟空在巨人阶段锁定横移，空格是闪步（`dodgeF/B/L/R`，位移方向 `monkey.moveYaw`）；镜头走 `AutoCam.updateDuel`（绑在悟空身后、可以越过围墙、只避开脚下的地形）；架势条是 `ui.setPosture`；对决里牛魔王的髋部碰撞圈加大（`updateBodyCircles`），两个巨人不会站进彼此身体里；牛魔王的配音走 `VOICE_STYLE.bull` 的长混响加回声（`echo`：山谷里传出来的声音）；提示在 `main.js` 的 `coach()`，UI 是 `ui.setGoal / setTip / setKeys`。
+- 配音：`tools/gen_voice.mjs`（ZenMux 的 `/audio/speech`，Gemini TTS；`ZENMUX_API_KEY` 放 `.env`），台词表在脚本里；游戏内只做很轻的处理（`VOICE_STYLE`）。
+- 过场接口：`bull.openingSlam({ target, hold, rest })`（坐姿朝一个地面点砸棍，棍子留在地上 `rest` 秒）、`bull.wake({ opening: false })`（醒来但不自动砸这一棍）、`arena.safeSpot(x, z, maxR, 1)`（塌陷之后仍是岩石的落脚点）、`OpeningMV.seek(t)` / `seekBeat(name, after)` 和 `Scene.seek(t)`（调试用：跳到过场的某一刻）。
 - 配音：`tools/gen_voice.sh` 用 macOS `say` 生成到 `assets/audio/voice/`（含 `voice.json` 时长清单）。
 - 后处理：bloom、调色（读 `arena.gradeHints`）、ACES、FXAA；过场开景深。
 - 调试：`window.__niumo`，参数 `?skipmv`、`?skipintro`、`?god`、`?debug`、`?autostart`、`?turbo=N`（测试用：每帧 N 步模拟）。

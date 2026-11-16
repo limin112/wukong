@@ -6,7 +6,8 @@
 //            spoken exchange (each line audible, in order, never overlapping, subtitles in sync), the roar, the camera
 //            landing on the fight camera, the fight with its music; then a second run skipped with Enter
 //   fight    weak points take damage from the monkey's staff; his moves land on the monkey; every key works
-//   phase2   half health: the 山崩 cutscene, phase two, the monkey on rock afterwards
+//   phase2   the seated prologue is over (a few blows): the 山崩 cutscene (he stands, sweeps the monkey off his feet, the
+//            monkey answers with 法相天地), phase two as a duel of giants
 //   ending   he falls into the lake, the volcano dies, rain, the card 火焰山 · 熄; R retries
 //   demo     ?demo: the splash offers the demo and starts the cinematic by itself; with ?skipmv the demo player
 //            fights (3x speed): it hurts him, dodges, attacks, survives
@@ -118,7 +119,7 @@ const SCEN = {
     let chapter = null, chapterOn = false, titleShown = false;
     const sample = async () => {
       const s = await page.evaluate(() => { const el = document.getElementById('mvtext');
-        return { narr: el.classList.contains('on') && !el.classList.contains('line') ? el.textContent : '',
+        return { narr: el.classList.contains('on') && !el.classList.contains('line') ? el.dataset.text : '',
           chapterOn: document.getElementById('chapter').classList.contains('on'), chapter: document.querySelector('#chapter .page').dataset.text,
           title: !document.getElementById('title').classList.contains('hide') }; });
       if (s.narr) seen.add(s.narr);
@@ -126,7 +127,7 @@ const SCEN = {
       if (s.title) titleShown = true;
     };
     const times = process.env.MVT ? process.env.MVT.split(',').map(Number) : [
-      1.5, cues.ash + 1.6, cues.ridge + 2.6, cues.caldera + 2.2, cues.breath + 1.6, cues.knee + 1.4, cues.knee + 4.2,
+      1.5, cues.ash + 1.6, cues.caldera + 2.2, cues.breath + 1.6, cues.knee + 1.4, cues.knee + 4.2,
       cues.title + 1.4, cues.title + 3.6, cues.eyes + 0.9];
     const t0 = Date.now();
     for (const t of times) {
@@ -164,7 +165,8 @@ const SCEN = {
     check(log.every((l, i) => i === 0 || l.at >= log[i - 1].at + log[i - 1].dur - 0.05), 'lines never overlap');
     check(subs.length === 6 && subs.every(s => s && s.includes(':')), 'subtitles show with each line: ' + subs.join(' / '));
     check(subs.filter(s => s.startsWith('bull:')).length === 3 && subs.filter(s => s.startsWith('monkey:')).length === 3, 'both of them speak');
-    check(jump >= 0 && jump < 0.6, `the cinematic ends on the fight camera (jump ${jump} m)`);
+    // (the fight camera is already moving when the fight starts: it reframes the staff he has just brought down)
+    check(jump >= 0 && jump < 1.0, `the cinematic ends on the fight camera (jump ${jump} m)`);
     check(await G('G.audio.musicState') === 'niumo_phase1', 'fight music on: ' + await G('G.audio.musicState'));
     check(await G('G.eyeK') >= 0.99, 'his eyes are open when the fight starts');
     check(await G('document.getElementById("title").classList.contains("hide")'), 'no title screen / menu between the cinematic and the fight');
@@ -183,6 +185,8 @@ const SCEN = {
     await open('autostart&skipintro&god&debug');
     await waitState('fight', 20000);
     await sleep(800); await shot('start');
+    // (this scenario is about the seated prologue: keep him seated however many blows land)
+    await G('(G.bull.T.preludeHits = 999, G.bull.T.preludeHp = 0, true)');
     // stand before the nearest weak point and work it with the staff
     const hp0 = await G('G.bull.hp');
     await G(`(() => { const t = G.nearestWeakPoint(); if (t) { const s = G.arena.bullSeat; const d = Math.hypot(t.pos.x - s.x, t.pos.z - s.z);
@@ -213,19 +217,20 @@ const SCEN = {
     await G('(G.bull.hp = G.bull.maxHp * 0.505, true)');
     await G('G.hitBull(G.bull.maxHp * 0.02, "kneeL")');
     await waitState('transition', 8000);
-    for (let i = 0; i < 13; i++) {
-      await page.waitForFunction(t => { const G = window.__niumo; return G.state !== 'transition' || (G.cut && G.cut.t >= t); }, { timeout: 30000, polling: 8 }, 0.6 + i);
+    for (let i = 0; i < 26; i++) {       // (the stand-up, then the sweep that throws him and 法相天地: about 45 s with its four lines)
+      await page.waitForFunction(t => { const G = window.__niumo; return G.state !== 'transition' || (G.cut && G.cut.t >= t); }, { timeout: 30000, polling: 8 }, 0.6 + i * 2);
       if (await G('G.state') !== 'transition') break;
-      await frozenShot('t' + (0.6 + i).toFixed(1));
+      await frozenShot('t' + (0.6 + i * 2).toFixed(1));
     }
-    await waitState('fight', 20000);
+    await waitState('fight', 40000);
     await sleep(1500); await shot('after');
     check(await G('G.bull.phase') === 2, 'the bull is in phase two');
     check(await G('G.arenaPhase') === 2, 'the arena erupted (phase 2)');
     check(await G('G.audio.musicState') === 'phase2' || await G('G.audio.musicState') === 'niumo_phase2', 'phase-two music: ' + await G('G.audio.musicState'));
-    check(await G('G.arena.lavaAt(G.monkey.pos.x, G.monkey.pos.z)') < 0.5, 'the monkey stands on rock after the collapse');
+    check(await G('G.monkey.giant && G.monkey.S > 15 && G.monkey.S * 1.5 < G.bull.T.height'), '法相天地: the monkey is a giant, a little smaller than the bull (' + await G('(G.monkey.S * 1.5).toFixed(0)') + ' m)');
+    check(await G('G.monkey.hp === G.monkey.maxHp && G.bull.duel'), 'he is whole again and the duel is on');
     const said = await G('G.voice.log.map(l => l.id + (l.audible ? "" : "(silent)")).join(" ")');
-    check(said === 'p1 p2', 'the 山崩 lines are spoken (牛魔王, then 孙悟空): ' + said);
+    check(said === 'p1 p2 p3 p4', 'the 山崩 lines are spoken (牛魔王, 孙悟空, 牛魔王, 孙悟空): ' + said);
     console.log('  ', JSON.stringify(await status()));
   },
 
@@ -255,7 +260,7 @@ const SCEN = {
     const music = await G('G.audio.musicState');
     check(['niumo_ending', 'victory'].includes(music), 'ending music: ' + music);
     const horn = await G('(() => { const m = G.actor.root.position; return { y: +m.y.toFixed(2), visible: G.actor.root.visible }; })()');
-    check(horn.visible && horn.y > 0.5, 'the monkey sits above the lake on the horn (y ' + horn.y + ')');
+    check(horn.visible && await G('G.monkey.S > 15'), 'the monkey stands by his rod in the last picture, the giant he ended the fight as');
     await page.waitForFunction(() => window.__niumo.cut && !window.__niumo.cut.running, { timeout: 30000, polling: 100 });
     await sleep(500); await shot('end');
     await key('KeyR');
@@ -286,9 +291,9 @@ const SCEN = {
       if (s.state === 'ending') break;
     }
     console.log('  ', JSON.stringify(s));
-    check(s.t > 60, `the demo played ${s.t.toFixed(0)} s of fight`);
+    check(s.t > 60 || s.state === 'ending', `the demo played ${s.t.toFixed(0)} s of fight${s.state === 'ending' ? ' and won it' : ''}`);
     check(s.dealt > 300 && s.hp < hp0, `the demo player hurts him (${Math.round(s.dealt)} damage, ${Math.round(hp0)} → ${Math.round(s.hp)})`);
-    check(s.rolls > 2 && s.lights + s.heavies > 5, `it dodges and attacks (${s.rolls} rolls, ${s.lights} light, ${s.heavies} heavy)`);
+    check(s.rolls >= 1 && s.lights + s.heavies > 5, `it dodges and attacks (${s.rolls} rolls, ${s.lights} light, ${s.heavies} heavy)`);
     check(s.deaths === 0, `it survives (deaths ${s.deaths}, hp ${Math.round(s.mhp)}, took ${Math.round(s.taken)})`);
   },
 

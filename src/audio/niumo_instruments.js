@@ -558,7 +558,150 @@ export function breathLayer(v, t, { inhale = 3, hold = 0.4, exhale = 3.4, gain =
   v.out(env, send, dry);
 }
 
+// ================================================================ the 1980s television-fantasy band (the fight music)
+// An electronic rhythm section under Chinese melody instruments: synth drums, a sequenced synth bass, a synth brass
+// lead, a pipa-like pluck. Each layer plays a whole phrase from one small node graph (times in seconds from t).
+
+/** Drum machine. kick / snare / hat: [[at, level, (hat) open]], tom: [[at, midi, level]] (a syndrum: the pitch falls). */
+export function kitLayer(v, t, { kick = [], snare = [], hat = [], tom = [], gain = 1, send = 0.12, dry = 1 }) {
+  const all = [...kick, ...snare, ...hat, ...tom];
+  if (!all.length) return;
+  const stop = t + Math.max(...all.map((h) => h[0])) + 0.8;
+  const sum = v.gain(gain);
+  if (kick.length) {
+    const o = v.osc('sine', 48, t, stop), g = v.gain(0);
+    o.connect(g); g.connect(sum);
+    for (const [at, a = 1] of kick) {
+      const s = t + at;
+      o.frequency.setValueAtTime(170, s); o.frequency.exponentialRampToValueAtTime(47, s + 0.085);
+      g.gain.setTargetAtTime(0.55 * a, s, 0.0015); g.gain.setTargetAtTime(0, s + 0.03, 0.075);
+    }
+  }
+  if (snare.length) {
+    const n = v.noise('white', t, stop), bp = v.biquad('bandpass', 2100, 0.55), hp = v.biquad('highpass', 500, 0.7), g = v.gain(0);
+    n.connect(bp); bp.connect(hp); hp.connect(g); g.connect(sum);
+    const o = v.osc('triangle', 190, t, stop), og = v.gain(0);
+    o.connect(og); og.connect(sum);
+    for (const [at, a = 1] of snare) {
+      const s = t + at;
+      g.gain.setTargetAtTime(0.5 * a, s, 0.001); g.gain.setTargetAtTime(0, s + 0.012, 0.06);
+      o.frequency.setValueAtTime(240, s); o.frequency.exponentialRampToValueAtTime(175, s + 0.05);
+      og.gain.setTargetAtTime(0.22 * a, s, 0.001); og.gain.setTargetAtTime(0, s + 0.01, 0.035);
+    }
+  }
+  if (hat.length) {
+    const n = v.noise('white', t, stop), hp = v.biquad('highpass', 7200, 0.9), g = v.gain(0);
+    n.connect(hp); hp.connect(g); g.connect(sum);
+    for (const [at, a = 1, open = 0] of hat) {
+      const s = t + at;
+      g.gain.setTargetAtTime(0.16 * a, s, 0.0008); g.gain.setTargetAtTime(0, s + 0.004, open ? 0.07 : 0.014);
+    }
+  }
+  if (tom.length) {
+    const o = v.osc('sine', 200, t, stop), g = v.gain(0), o2 = v.osc('triangle', 200, t, stop), g2 = v.gain(0.25);
+    o.connect(g); o2.connect(g2); g2.connect(g); g.connect(sum);
+    for (const [at, midi, a = 1] of tom) {
+      const s = t + at, f = mtof(midi);
+      for (const q of [o, o2]) { q.frequency.setValueAtTime(f * 2.3, s); q.frequency.exponentialRampToValueAtTime(f, s + 0.13); }
+      g.gain.setTargetAtTime(0.34 * a, s, 0.0015); g.gain.setTargetAtTime(0, s + 0.03, 0.085);
+    }
+  }
+  v.out(sum, send, dry);
+}
+
+/** Sequenced synth bass: saw + square through a resonant low-pass that snaps shut on every note. notes: [[midi, seconds, accent]]. */
+export function synthBassLayer(v, t, { notes, gain = 0.1, cutoff = 1500, send = 0.05, dry = 1 }) {
+  let total = 0;
+  for (const n of notes) total += n[1];
+  const stop = t + total + 0.12;
+  const f0 = mtof(notes[0][0]);
+  const o1 = v.osc('sawtooth', f0, t, stop), o2 = v.osc('square', f0 / 2, t, stop), sub = v.gain(0.45);
+  const lp = v.biquad('lowpass', 300, 5), env = v.gain(0);
+  o1.connect(lp); o2.connect(sub); sub.connect(lp); lp.connect(env);
+  let tn = t;
+  for (const [m, d, acc = 1] of notes) {
+    const f = mtof(m);
+    o1.frequency.setValueAtTime(f, tn); o2.frequency.setValueAtTime(f / 2, tn);
+    lp.frequency.setValueAtTime(v.fclamp(cutoff * (0.7 + 0.5 * acc)), tn);
+    lp.frequency.exponentialRampToValueAtTime(230, tn + Math.min(d * 0.9, 0.17));
+    env.gain.setTargetAtTime(gain * acc, tn, 0.003);
+    env.gain.setTargetAtTime(gain * 0.12, tn + d * 0.72, 0.015);
+    tn += d;
+  }
+  env.gain.setTargetAtTime(0, tn, 0.02);
+  v.out(env, send, dry);
+}
+
+/** Synth brass lead: three detuned saws, the filter "blowing open" on each note, a delayed vibrato on the long ones.
+ *  notes: [[midi | null (rest), seconds, accent]]. */
+export function brassLayer(v, t, { notes, gain = 0.05, bright = 1, vib = 14, vibRate = 5.4, send = 0.3, dry = 1, octave = 0 }) {
+  let total = 0;
+  for (const n of notes) total += n[1];
+  const first = notes.find((n) => n[0] != null);
+  if (!first) return;
+  const stop = t + total + 0.5;
+  const lp = v.biquad('lowpass', 600, 1.6), env = v.gain(0);
+  const lfo = v.osc('sine', vibRate, t, stop), depth = v.gain(0);
+  lfo.connect(depth);
+  const oscs = [];
+  const dets = octave ? [-9, 0, 8, 1200 * octave] : [-9, 0, 8];
+  dets.forEach((d, i) => {
+    const o = v.osc('sawtooth', mtof(first[0]), t, stop), g = v.gain(i === 3 ? 0.35 : 1 / 3);
+    o.detune.value = d; depth.connect(o.detune);
+    o.connect(g); g.connect(lp); oscs.push(o);
+  });
+  lp.connect(env);
+  let tn = t, prev = null;
+  for (const [m, d, acc = 1] of notes) {
+    if (m == null) { env.gain.setTargetAtTime(0, tn, 0.03); prev = null; tn += d; continue; }
+    const f = mtof(m), lvl = gain * acc;
+    for (const o of oscs) { if (prev == null) o.frequency.setValueAtTime(f, tn); else o.frequency.setTargetAtTime(f, tn, 0.008); }
+    const top = v.fclamp(3600 * bright * (0.75 + 0.35 * acc));
+    lp.frequency.setValueAtTime(v.fclamp(520 * bright), tn);
+    lp.frequency.exponentialRampToValueAtTime(top, tn + 0.045);
+    lp.frequency.setTargetAtTime(top * 0.55, tn + 0.06, Math.max(0.08, d * 0.4));
+    env.gain.setTargetAtTime(lvl * 0.25, tn - 0.012, 0.006);       // tongued
+    env.gain.setTargetAtTime(lvl, tn, 0.012);
+    depth.gain.setTargetAtTime(0, tn, 0.02);
+    if (d > 0.4) depth.gain.setTargetAtTime(vib, tn + 0.22, 0.15);
+    prev = m; tn += d;
+  }
+  env.gain.setTargetAtTime(0, tn - 0.02, 0.06);
+  v.out(env, send, dry);
+}
+
+/** Pipa-like pluck: a bright string that twangs into pitch and dies fast; `trem` (seconds) re-plucks a long note (轮指).
+ *  notes: [[midi | null, seconds, accent, trem]]. */
+export function pluckLayer(v, t, { notes, gain = 0.06, bright = 1, send = 0.22, dry = 1 }) {
+  let total = 0;
+  for (const n of notes) total += n[1];
+  const first = notes.find((n) => n[0] != null);
+  if (!first) return;
+  const stop = t + total + 0.6;
+  const o1 = v.osc('sawtooth', mtof(first[0]), t, stop), o2 = v.osc('triangle', mtof(first[0]), t, stop), g1 = v.gain(0.45);
+  const lp = v.biquad('lowpass', 900, 2.2), body = v.biquad('peaking', 1900, 1.2, 5), env = v.gain(0);
+  o1.connect(g1); g1.connect(lp); o2.connect(lp); lp.connect(body); body.connect(env);
+  const pick = (s, f, lvl, tau) => {
+    for (const o of [o1, o2]) { o.frequency.setValueAtTime(f * 1.014, s); o.frequency.exponentialRampToValueAtTime(f, s + 0.022); }
+    lp.frequency.setValueAtTime(v.fclamp(5200 * bright), s);
+    lp.frequency.exponentialRampToValueAtTime(v.fclamp(Math.max(700, f * 1.6)), s + 0.07);
+    env.gain.setTargetAtTime(lvl, s, 0.0012);
+    env.gain.setTargetAtTime(0, s + 0.006, tau);
+  };
+  let tn = t;
+  for (const [m, d, acc = 1, trem = 0] of notes) {
+    if (m != null) {
+      const f = mtof(m);
+      if (trem > 0) for (let s = 0, i = 0; s < d - 0.01; s += trem, i++) pick(tn + s, f, gain * acc * (i ? 0.8 : 1), trem * 0.55);
+      else pick(tn, f, gain * acc, Math.min(0.22, Math.max(0.05, d * 0.7)));
+    }
+    tn += d;
+  }
+  v.out(env, send, dry);
+}
+
 export const NIUMO_INST = {
+  kit: kitLayer, sbass: synthBassLayer, brass: brassLayer, pluck: pluckLayer,
   wardrum: wardrumLayer, droll: drumRollLayer, gong: gongLayer, cymbal: cymbalLayer, tbell: templeBellLayer,
   muyu: muyuLayer, boom: boomLayer, monk: monkLayer, suona: suonaLayer, guqin: guqinLayer,
   wind: windLayer, fire: fireLayer, lava: lavaLayer, rain: rainLayer, breath: breathLayer,
