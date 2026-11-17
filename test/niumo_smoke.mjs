@@ -411,10 +411,17 @@ const SCEN = {
       check(seen.includes('roll'), `闪 rolls (before ${pre}: ${seen.join(' ')})`);
       const f = await fps(3000);
       console.log(`  phone 844x390@3x: ${f.toFixed(1)} fps (headless desktop GPU; a real phone is slower)`);
-      // portrait: the rotate card
+      // portrait (2026-11-17: played upright too): no card asking to turn; the view widened; buttons, bars and the tip
+      // inside the screen; still fluid
       await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 3, isMobile: true, hasTouch: true });
-      await sleep(300);
-      check(await page.evaluate(() => getComputedStyle(document.querySelector('#touch .rotate')).display === 'flex'), 'portrait asks to turn the phone');
+      await sleep(600);
+      const pr = await page.evaluate(() => {
+        const inside = sel => { const e = document.querySelector(sel); if (!e) return true; const r = e.getBoundingClientRect(); return r.width === 0 || (r.left >= -1 && r.right <= innerWidth + 1); };
+        return { noCard: !document.querySelector('#touch .rotate'), btns: inside('#touch .b-atk') && inside('#touch .b-dodge'), boss: inside('#boss'), tip: inside('#tip'), wide: document.documentElement.scrollWidth <= innerWidth + 1 };
+      });
+      check(pr.noCard && pr.btns && pr.boss && pr.tip && pr.wide, 'portrait plays: no rotate card, everything inside the screen', JSON.stringify(pr));
+      const fp = await fps(2500);
+      check(fp > 50, `portrait frame rate ${fp.toFixed(1)} fps`);
       await shot('portrait');
     } finally {
       await page.emulate({ viewport: { width: W, height: H }, userAgent: await browser.userAgent() });
