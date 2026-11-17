@@ -25,6 +25,13 @@ await page.waitForFunction('window.__ready || window.__error', { timeout: 60000 
 const err = await page.evaluate('window.__error || null');
 if (err) { console.log('boot failed:', err); process.exit(1); }
 const L = await page.evaluate('window.__W.L');
+await page.evaluate(() => window.__W.pose(0, 0, 'side'));
+const hd = await page.evaluate('window.__W.heading()');
+const hdOk = Math.abs(hd) < 4;
+console.log((hdOk ? '  ok   ' : '  FAIL ') + `he faces straight down +Z, the way he runs (tail -> head ${hd.toFixed(1)}°)`);
+if (!hdOk) fails.push('heading');
+await page.evaluate('window.__W.top()'); await page.screenshot({ path: path.join(OUT, 'top.png') });
+await page.evaluate(() => window.__W.pose(0, 1, 'front')); await page.screenshot({ path: path.join(OUT, 'front.png') });
 const N = 8, files = [];
 let lowMax = 0;
 for (let i = 0; i < N; i++) {

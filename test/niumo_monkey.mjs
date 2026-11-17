@@ -253,7 +253,7 @@ async function iframes() {
     let r = (await T('T.giant.results.slice()')).pop();
     check(r.result === false && r.hp1 === r.hp0, `${kind}: blow at t=${r.mt} passes through (i-frames)`, JSON.stringify(r));
     if (kind === 'roll') { await view('side'); await shot('roll_iframe_side'); await view('auto'); await shot('roll_iframe_auto'); }
-    while ((await state()).mt >= 0 && (await state()).mt < 0.42) await step(1 / 60);
+    while ((await state()).mt >= 0 && (await state()).mt < 0.54) await step(1 / 60);     // (2026-11-17: the whole roll is invulnerable, i-frames to 0.52 s; the recovery after it is not)
     await T(`(T.giant.strike({ delay: 0, dmg: 25, kind: 'heavy', blockable: false, label: '${kind} late' }), true)`);
     await step(1 / 60);
     r = (await T('T.giant.results.slice()')).pop();
@@ -267,7 +267,7 @@ async function iframes() {
 }
 
 async function fan() {
-  console.log('\n[fan] the banana-leaf fan: cone test, mana, gust');
+  console.log('\n[fan] the banana-leaf fan is gone: cone geometry, and I does nothing');
   // pure cone geometry
   const g = await T(`(() => {
     const V = (x, y, z) => new T.THREE.Vector3(x, y, z), o = V(0, 1, 0), d = V(0, 0, 1), A = 34 * Math.PI / 180, R = 13;
@@ -281,31 +281,14 @@ async function fan() {
   })()`);
   check(g.ahead && g.edgeIn && !g.edgeOut && g.edgeOutFat && !g.behind && !g.tooFar && g.farFat && !g.side && g.capCross && !g.capBehind,
     'cone hit test (inside / edge / outside / behind / range / fat spheres / capsules)', JSON.stringify(g));
-  // in play: facing the left hand on the ground; the right hand is 12 m to the side
+  // (the fan itself was taken out of the game on 2026-11-17 - the user wants J K L only: the cone test above stays for the
+  // geometry it shares; in play, I and the pad's X do nothing)
   await setup({ x: 6.0, z: -4.5, yaw: Math.PI, pose: 'slamL' });
   const s0 = await state();
   await tap('KeyI');
-  let s = await step(1 / 60);
-  check(s.move === 'fan', 'I -> fan', s.move);
-  s = await step(0.3); await view('side'); await shot('fan_windup_side'); await view('auto'); await shot('fan_windup_auto');
-  s = await step(0.16); await view('auto'); await shot('fan_gust_auto'); await view('side'); await shot('fan_gust_side');
-  s = await step(0.25); await view('auto'); await shot('fan_gust2_auto');
+  const s = await step(1 / 60); await step(0.4);
   const evs = await events();
-  const fe = evs.find(e => e.type === 'fan');
-  const fans = await T('T.giant.fans.splice(0)');
-  const gusts = await T('T.arena.gusts.splice(0)');
-  console.log('    fan parts', fe && fe.parts, 'boss.fanned', JSON.stringify(fans));
-  check(!!fe, 'fan event fires at the release', evs.map(e => e.type).join(','));
-  check(fe && fe.parts.includes('handL') && !fe.parts.includes('handR') && !fe.parts.includes('kneeR'), 'gust catches the hand ahead, not the parts outside the cone', fe && fe.parts.join(','));
-  check(fans.length === 1 && fans[0].via === 'fanned' && Math.abs(fans[0].dir[1]) < 1e-6 && fans[0].range > 10, 'boss.fanned({ from, dir (horizontal), range, angle }) called once', JSON.stringify(fans[0]));
-  check(gusts.length === 1, 'arena.fanGust called (put out fires)', String(gusts.length));
-  const mpAfter = (await state()).mp;
-  check(s0.mp - mpAfter > 25, 'fan costs mana', `${s0.mp} -> ${mpAfter}`);
-  await step(0.6);
-  await T('(T.monkey.mp = 5, true)');
-  await tap('KeyI'); s = await step(1 / 60);
-  const e2 = await events();
-  check(s.move !== 'fan' && e2.some(e => e.type === 'fan-empty'), 'no mana: no fan', `${s.move} ${e2.map(e => e.type)}`);
+  check(s.move !== 'fan' && !evs.some(e => e.type === 'fan') && (await state()).mp === s0.mp, 'I does nothing (no fan in the game)', `${s.move} ${evs.map(e => e.type)}`);
 }
 
 async function execute() {

@@ -185,6 +185,10 @@ const SCEN = {
     await open('autostart&skipintro&god&debug');
     await waitState('fight', 20000);
     await sleep(800); await shot('start');
+    await page.waitForFunction(() => { const G = window.__niumo; return G.btLast?.done && !G.input.locked && ['idle', 'move'].includes(G.monkey.state); }, { timeout: 20000, polling: 30 });     // (the opening's scripted bullet time: the controls are locked till his roll is done)
+    check(await G('!!(G.btLast.auto && G.btLast.rolled && !G.btLast.hit)'), 'the opening bullet time plays by itself: he rolls out from under the staff, no key pressed');
+    const chains = await G('G.bull.char?.droppedChains || 0');
+    check(chains >= 10, `the chains at his wrists are gone (${chains} links dropped)`);
     // (this scenario is about the seated prologue: keep him seated however many blows land)
     await G('(G.bull.T.preludeHits = 999, G.bull.T.preludeHp = 0, true)');
     // stand before the nearest weak point and work it with the staff
@@ -245,6 +249,11 @@ const SCEN = {
     const reb = await G('({ hp: G.bull.hp, gold: G.bull.goldT, bull: G.bull.state, monkey: G.monkey.state, move: G.monkey.a.move && G.monkey.a.move.def.name })');
     check(reb.hp === hpG && reb.gold > 0, `a blow on the gold does nothing to him (hp ${Math.round(hpG)} -> ${Math.round(reb.hp)}, still gold)`);
     check(reb.monkey === 'hurt' && reb.bull !== 'stagger', `the monkey reels (${reb.monkey}, bull ${reb.bull})`);
+    // 组合技: the gold ends and at once he runs at the monkey as the white bull
+    await page.waitForFunction(() => window.__niumo.bull.goldT <= 0, { timeout: 6000, polling: 20 });
+    await page.waitForFunction(() => window.__niumo.bull.beastOn, { timeout: 1500, polling: 16 }).catch(() => {});
+    check(await G('!!(G.bull.atk && G.bull.atk.name === "charge" && G.bull.atk.combo && G.bull.beastOn)'), '组合技: the gold ends and he charges as the white bull at once');
+    await shot('gold_combo');
     // 冲撞 as the white bull: a step aside when the coach says 现在闪 takes nothing
     await page.waitForFunction(() => { const G = window.__niumo; return G.bull.goldT <= 0 && G.bull.state === 'idle' && G.monkey.state === 'idle'; }, { timeout: 15000, polling: 50 });
     await G('(() => { const b = G.bull, m = G.monkey, f = b.fwd(); m.pos.x = b.pos.x + f.x * 150; m.pos.z = b.pos.z + f.z * 150; b.forceAttack("charge", m); return true; })()');
@@ -337,6 +346,79 @@ const SCEN = {
     console.log(`  fight: ${f.toFixed(1)} fps at ${W}x${H}, ${ms.toFixed(2)} ms CPU per frame`);
     check(f >= 50, `frame rate ≥ 50 fps (aim 60): ${f.toFixed(1)}`);
     await shot('fight');
+  },
+
+  // a phone in landscape (touch.js): tap to start, skip the cinematic with its button, walk with the stick, strike, roll
+  async touch() {
+    await page.emulate({ viewport: { width: 844, height: 390, deviceScaleFactor: 3, isMobile: true, hasTouch: true, isLandscape: true },
+      userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1' });
+    try {
+      await open('touch&god');
+      check(await page.evaluate(() => document.body.classList.contains('touch') && !!document.getElementById('touch')), 'touch controls are on');
+      check(await G('G.renderer ? G.renderer.getPixelRatio() <= 1.25 : true'), 'phone: pixel ratio capped');
+      await page.waitForFunction(() => document.getElementById('splash').classList.contains('ready'), { timeout: 30000 });
+      await page.touchscreen.tap(422, 200);
+      await waitState('mv', 15000);
+      await sleep(1500);
+      const skip = await page.evaluate(() => { const b = document.querySelector('#touch .b-skip'); const r = b.getBoundingClientRect(); return getComputedStyle(b).display !== 'none' ? [r.x + r.width / 2, r.y + r.height / 2] : null; });
+      check(!!skip, 'the cinematic shows 跳过');
+      await shot('mv');
+      if (skip) await page.touchscreen.tap(skip[0], skip[1]);
+      await page.waitForFunction(() => ['fight', 'fight-wait'].includes(window.__niumo.state), { timeout: 20000, polling: 50 });
+      check(true, '跳过 skips to the fight');
+      await page.waitForFunction(() => window.__niumo.state === 'fight', { timeout: 20000, polling: 50 });
+      await sleep(800);
+      const btn = cls => page.evaluate(c => { const r = document.querySelector('#touch .' + c).getBoundingClientRect(); return [r.x + r.width / 2, r.y + r.height / 2, r.width]; }, cls);
+      const L = await btn('b-atk');
+      check(L[2] > 40 && await page.evaluate(() => document.querySelectorAll('#touch .btns button').length === 2), `two buttons, like a MOBA (攻 ${Math.round(L[2])} px)`);
+      await shot('fight');
+      // the stick: drag from the left half
+      const p0 = await G('[G.monkey.pos.x, G.monkey.pos.z]');
+      const cdp = await page.target().createCDPSession();
+      const tp = (type, x, y) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: type === 'touchEnd' ? [] : [{ x, y, id: 1 }] });
+      await tp('touchStart', 150, 280); await tp('touchMove', 150, 250); await tp('touchMove', 150, 220);
+      await sleep(900);
+      const mv = await G('[G.input ? G.input.touchMove.y : null, G.monkey.state]');
+      await shot('stick');
+      await tp('touchEnd');
+      const p1 = await G('[G.monkey.pos.x, G.monkey.pos.z]');
+      check(Math.hypot(p1[0] - p0[0], p1[1] - p0[1]) > 1, `the stick walks him (${Math.hypot(p1[0] - p0[0], p1[1] - p0[1]).toFixed(1)} m, stick y ${mv[0]})`);
+      await sleep(300);
+      await page.waitForFunction(() => { const G = window.__niumo; return G.btLast?.done && !G.input.locked && ['idle', 'move'].includes(G.monkey.state); }, { timeout: 20000, polling: 30 });     // (the opening's scripted bullet time: the controls are locked till his roll is done)
+      // 攻: a tap strikes
+      await page.touchscreen.tap(L[0], L[1]);
+      await sleep(120);
+      const st = await G('[G.monkey.state, G.monkey.a.move && G.monkey.a.move.def.name]');
+      check(st[0] === 'attack', `攻 tap strikes (${st.join(' ')})`);
+      await sleep(900);
+      const R = await btn('b-dodge');
+      // held: 攻 charges the heavy blow, 闪 guards
+      await page.waitForFunction(() => ['idle', 'move'].includes(window.__niumo.monkey.state), { timeout: 15000, polling: 30 });
+      await tp('touchStart', L[0], L[1]); await sleep(500);
+      const hv = await G('[G.input.isHeld("heavy"), G.monkey.a.move && G.monkey.a.move.name, G.monkey.state, Math.round(G.monkey.st)]');
+      await tp('touchEnd'); await sleep(900);
+      check(hv[0] && hv[1] === 'heavy', `攻 held charges the heavy blow (${hv.join(' ')})`);
+      await page.waitForFunction(() => ['idle', 'move'].includes(window.__niumo.monkey.state), { timeout: 15000, polling: 30 });
+      await tp('touchStart', R[0], R[1]); await sleep(500);
+      const gd = await G('[G.input.isHeld("block"), G.monkey.state]');
+      await tp('touchEnd'); await sleep(400);
+      check(gd[0], `闪 held guards (${gd.join(' ')})`);
+      await page.waitForFunction(() => ['idle', 'move'].includes(window.__niumo.monkey.state), { timeout: 15000, polling: 30 });     // (the opening's bullet time slows his blow)
+      const pre = await G('G.monkey.state');
+      await page.touchscreen.tap(R[0], R[1]);
+      const seen = [];
+      for (let i = 0; i < 12; i++) { seen.push(await G('G.monkey.state + (G.input.spaceDownAt >= 0 ? "*" : "")')); await sleep(30); }
+      check(seen.includes('roll'), `闪 rolls (before ${pre}: ${seen.join(' ')})`);
+      const f = await fps(3000);
+      console.log(`  phone 844x390@3x: ${f.toFixed(1)} fps (headless desktop GPU; a real phone is slower)`);
+      // portrait: the rotate card
+      await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 3, isMobile: true, hasTouch: true });
+      await sleep(300);
+      check(await page.evaluate(() => getComputedStyle(document.querySelector('#touch .rotate')).display === 'flex'), 'portrait asks to turn the phone');
+      await shot('portrait');
+    } finally {
+      await page.emulate({ viewport: { width: W, height: H }, userAgent: await browser.userAgent() });
+    }
   },
 };
 

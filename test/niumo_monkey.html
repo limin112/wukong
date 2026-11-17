@@ -21,7 +21,7 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
-import { loadCharacter, loadBlade } from '../src/assets.js';
+import { loadCharacter, loadBlade, loadGLTF } from '../src/assets.js';
 import { Actor } from '../src/actor.js';
 import { FX } from '../src/fx.js';
 import { updateLooks } from '../src/look.js';
@@ -54,8 +54,9 @@ const monkeyUrl = (await has('../assets/models/niumo_monkey.glb')) ? '../assets/
 const staffGlb = await has('../assets/models/niumo_staff.glb');
 // ?clean=1 reproduces the shared loader's default arm-weight cleaning (too aggressive for the monkey's bracers)
 const char = await loadCharacter(monkeyUrl, { height: 1.5, cleanArms: Q.get('clean') === '1' });
-// the staff is the procedural rod (as in the game: loadMonkeyAssets); ?staff=glb shows the Tripo file instead
-const staff = staffGlb && Q.get('staff') === 'glb' ? await loadBlade('../assets/models/niumo_staff.glb', { length: 1.9, gripFrac: 0.3 }) : createStaff();
+// the staff as in the game (loadMonkeyAssets): the rod with the Tripo hoop ends; ?staff=glb shows the old Tripo file instead
+const jgbCap = await loadGLTF('../assets/models/niumo_jgb_cap.glb').then(g => g.scene).catch(() => null);
+const staff = staffGlb && Q.get('staff') === 'glb' ? await loadBlade('../assets/models/niumo_staff.glb', { length: 1.9, gripFrac: 0.3 }) : createStaff({ cap: jgbCap });
 scene.add(char.root);
 const actor = new Actor(char, { lib: MONKEY, hold: MONKEY_HOLD, sword: staff, scene });
 actor.playBase('idle', { fade: 0 });
